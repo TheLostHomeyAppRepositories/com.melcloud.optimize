@@ -86,18 +86,32 @@ export class COPHelper {
     try {
       this.logger.log(`Computing ${timeframe} COP values`);
 
-      // Get MELCloud data from the optimizer
-      const melData = await this.getMELCloudData();
-      if (!melData || !melData.Device) {
-        this.logger.error('No MELCloud data available for COP calculation');
-        return;
-      }
+      // Prefer the accurate EnergyCost/Report aggregates (the same source the live optimizer trusts).
+      // The Device/Get DailyHeating/HotWaterEnergyProduced/Consumed fields read 0 on some units,
+      // which previously made every persisted COP snapshot/weekly-trend 0 (DHW-2). Fall back to the
+      // device-state daily counters only if the totals fetch is unavailable.
+      let producedHeating: number;
+      let consumedHeating: number;
+      let producedHW: number;
+      let consumedHW: number;
 
-      // Extract energy figures – values are kWh for the period up to now
-      const producedHeating = melData.Device.DailyHeatingEnergyProduced || 0;
-      const consumedHeating = melData.Device.DailyHeatingEnergyConsumed || 0;
-      const producedHW = melData.Device.DailyHotWaterEnergyProduced || 0;
-      const consumedHW = melData.Device.DailyHotWaterEnergyConsumed || 0;
+      const totals = await this.getEnergyTotals();
+      if (totals) {
+        producedHeating = totals.TotalHeatingProduced || 0;
+        consumedHeating = totals.TotalHeatingConsumed || 0;
+        producedHW = totals.TotalHotWaterProduced || 0;
+        consumedHW = totals.TotalHotWaterConsumed || 0;
+      } else {
+        const melData = await this.getMELCloudData();
+        if (!melData || !melData.Device) {
+          this.logger.error('No MELCloud data available for COP calculation');
+          return;
+        }
+        producedHeating = melData.Device.DailyHeatingEnergyProduced || 0;
+        consumedHeating = melData.Device.DailyHeatingEnergyConsumed || 0;
+        producedHW = melData.Device.DailyHotWaterEnergyProduced || 0;
+        consumedHW = melData.Device.DailyHotWaterEnergyConsumed || 0;
+      }
 
       // Safety – avoid division by zero
       const copHeat = consumedHeating > 0 ? producedHeating / consumedHeating : 0;
@@ -116,6 +130,32 @@ export class COPHelper {
       this.logger.log(`- Hot Water: Produced ${producedHW.toFixed(2)} kWh, Consumed ${consumedHW.toFixed(2)} kWh, COP ${copHW.toFixed(2)}`);
     } catch (error: unknown) {
       this.logger.error(`Error computing ${timeframe} COP:`, error);
+    }
+  }
+
+  /**
+   * Get accurate daily energy totals from the EnergyCost/Report aggregates.
+   * This is the same source the live optimizer uses, and unlike the Device/Get daily
+   * counters it reports real produced/consumed figures on all units.
+   * @returns Daily energy totals, or null if unavailable
+   */
+  private async getEnergyTotals(): Promise<any | null> {
+    try {
+      const deviceId = this.homey.settings.get('device_id');
+      const buildingId = parseInt(this.homey.settings.get('building_id') || '0');
+      if (!deviceId || !buildingId) {
+        return null;
+      }
+
+      const melCloud = (global as any).melCloud;
+      if (!melCloud || typeof melCloud.getDailyEnergyTotals !== 'function') {
+        return null;
+      }
+
+      return await melCloud.getDailyEnergyTotals(deviceId, buildingId);
+    } catch (error: unknown) {
+      this.logger.error('Error getting energy totals for COP calculation:', error);
+      return null;
     }
   }
 

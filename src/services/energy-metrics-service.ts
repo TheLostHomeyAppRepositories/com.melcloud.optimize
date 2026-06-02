@@ -36,6 +36,12 @@ export interface EnergyMetricsLogger {
 export const ENERGY_METRICS_CONFIG = {
   /** Minimum heating consumption (kWh) to consider winter mode */
   MIN_HEATING_FOR_WINTER: 1.0,
+  /**
+   * Minimum heating energy PRODUCED (kWh) for the unit to be considered heating at all.
+   * Below this the pump produces ~no useful heat (only standby/parasitic draw), so the season
+   * is summer regardless of consumed electricity. Prevents being stuck in "transition" all summer.
+   */
+  MIN_HEATING_PRODUCED_FOR_SEASON: 0.5,
   /** Ratio of heating to hot water for winter classification */
   HEATING_DOMINANT_RATIO: 2.0,
   /** Default efficiency fallback divisor for basic normalization */
@@ -211,7 +217,7 @@ export class EnergyMetricsService {
         : hotWaterEfficiencyRaw;
 
       // Determine seasonal mode and optimization focus
-      const seasonalMode = this.determineSeason(heatingConsumed, hotWaterConsumed);
+      const seasonalMode = this.determineSeason(heatingConsumed, hotWaterConsumed, heatingProduced);
       const optimizationFocus = this.determineOptimizationFocus(
         enhancedCOPData.trends,
         seasonalMode,
@@ -273,7 +279,20 @@ export class EnergyMetricsService {
    * @param hotWaterConsumed Total hot water energy consumed (kWh)
    * @returns Seasonal mode (summer/winter/transition)
    */
-  determineSeason(heatingConsumed: number, hotWaterConsumed: number): SeasonalMode {
+  determineSeason(
+    heatingConsumed: number,
+    hotWaterConsumed: number,
+    heatingProduced?: number
+  ): SeasonalMode {
+    // Root-cause guard: if the pump produces ~no heat, it's summer even when standby/parasitic
+    // electricity keeps heatingConsumed above the winter threshold. Skipped when heatingProduced
+    // is unknown (undefined) to preserve legacy behavior.
+    if (
+      heatingProduced !== undefined &&
+      heatingProduced < ENERGY_METRICS_CONFIG.MIN_HEATING_PRODUCED_FOR_SEASON
+    ) {
+      return 'summer';
+    }
     if (heatingConsumed < ENERGY_METRICS_CONFIG.MIN_HEATING_FOR_WINTER) {
       // Less than 1 kWh heating in 7 days = summer
       return 'summer';
@@ -385,8 +404,9 @@ export class EnergyMetricsService {
       const energyData = await this.melCloud.getDailyEnergyTotals(deviceId, buildingId);
 
       const heatingConsumed = energyData.TotalHeatingConsumed || 0;
+      const heatingProduced = energyData.TotalHeatingProduced || 0;
       const hotWaterConsumed = energyData.TotalHotWaterConsumed || 0;
-      
+
       // Prefer explicit fields if present, then averageCOP, then legacy Average* fields
       const realHeatingCOP = Number(
         energyData.heatingCOP ?? energyData.averageCOP ?? energyData.AverageHeatingCOP ?? 0
@@ -402,7 +422,7 @@ export class EnergyMetricsService {
 
       this.logger.log('Using fallback energy metrics calculation');
 
-      const seasonalMode = this.determineSeason(heatingConsumed, hotWaterConsumed);
+      const seasonalMode = this.determineSeason(heatingConsumed, hotWaterConsumed, heatingProduced);
 
       return {
         realHeatingCOP,

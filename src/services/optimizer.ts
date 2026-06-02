@@ -121,6 +121,8 @@ interface Zone1OptimizationResult {
   lockoutActive: boolean;
   changed: boolean;
   needsApply: boolean;
+  /** True when the write was suppressed because the room is above the comfort band (no heat possible). */
+  heatDemandHold?: boolean;
   priceNormalized: number;
   weatherInfo?: WeatherInfo | null;
   planningBias?: number;
@@ -1695,6 +1697,18 @@ export class Optimizer {
     );
     this.logger.log('Enhanced optimization result:', logData);
 
+    // Heat-demand gate (Fix 4): when the room sits above the controllable comfort band (e.g. solar
+    // gain in summer), every clamped setpoint is <= maxTemp < room, so it cannot call for heat —
+    // applying a new zone1 setpoint is physically a no-op and only causes pointless MELCloud churn.
+    // This is inert during heating season: the room is within/below the band whenever the pump can
+    // actually heat, so the gate never blocks a real adjustment.
+    const roomAboveBand =
+      Number.isFinite(currentTemp as number) && (currentTemp as number) > constraintsBand.maxTemp;
+    if (roomAboveBand) {
+      const idleNote = deviceState?.IdleZone1 === true ? ', zone1 idle' : '';
+      adjustmentReason += ` | Room ${(currentTemp as number).toFixed(1)}°C above comfort band ${constraintsBand.maxTemp}°C${idleNote} — setpoint has no effect, holding`;
+    }
+
     return {
       targetTemp,
       reason: adjustmentReason,
@@ -1707,7 +1721,8 @@ export class Optimizer {
       duplicateTarget,
       lockoutActive,
       changed: zone1FinalConstraints.changed,
-      needsApply: zone1FinalConstraints.changed && !zone1FinalConstraints.lockoutActive && !duplicateTarget,
+      needsApply: zone1FinalConstraints.changed && !zone1FinalConstraints.lockoutActive && !duplicateTarget && !roomAboveBand,
+      heatDemandHold: roomAboveBand,
       priceNormalized: priceNormalizedValue,
       weatherInfo,
       planningBias: scaledPlanningBias,
@@ -2158,7 +2173,9 @@ export class Optimizer {
           ? `Setpoint change lockout(${this.minSetpointChangeMinutes}m) to prevent cycling`
           : zone1Result.duplicateTarget
             ? 'Duplicate target – already applied recently'
-            : `Temperature difference ${zone1Result.tempDifference.toFixed(1)}°C below deadband ${this.getZone1Constraints().deadband}°C`;
+            : zone1Result.heatDemandHold
+              ? 'Room above comfort band — setpoint has no effect (no heat demand)'
+              : `Temperature difference ${zone1Result.tempDifference.toFixed(1)}°C below deadband ${this.getZone1Constraints().deadband}°C`;
     }
 
     if (!changes.zone1Applied && changes.zone1HoldReason) {
@@ -2172,6 +2189,13 @@ export class Optimizer {
         changes.tankApplied = true;
 
         this.stateManager.recordTankChange(tankResult.toTemp, tankResult.evaluatedAtMs ?? Date.now());
+
+        // Persist tank lockout timestamp immediately. In summer zone1 never applies, so without
+        // this a tank-only change is never written to settings and the anti-cycling lockout is
+        // lost on restart (allowing a 2nd tank change within the hour). Mirrors the zone1 path above.
+        if (this.homey) {
+          this.stateManager.saveToSettings(this.homey);
+        }
 
         logger('tank.applied', {
           fromTemp: tankResult.fromTemp,

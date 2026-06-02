@@ -370,6 +370,34 @@ describe('COPHelper', () => {
       expect(mockLogger.log).toHaveBeenCalledWith('Daily COP values:');
     });
 
+    it('should prefer EnergyCost/Report totals over the (often-zero) device-state daily counters', async () => {
+      // Regression for DHW-2: device-state Daily* fields read 0 on some units, zeroing all history.
+      // The totals path returns the real produced/consumed (e.g. hotWater 5.273/1.794 -> COP 2.94).
+      jest.spyOn(copHelper as any, 'getEnergyTotals').mockResolvedValue({
+        TotalHeatingProduced: 0,
+        TotalHeatingConsumed: 1.527,
+        TotalHotWaterProduced: 5.273,
+        TotalHotWaterConsumed: 1.794
+      });
+      // Device-state path would yield zeros; ensure it is NOT used when totals exist.
+      const melDataSpy = jest.spyOn(copHelper as any, 'getMELCloudData').mockResolvedValue({
+        Device: {
+          DailyHeatingEnergyProduced: 0,
+          DailyHeatingEnergyConsumed: 0,
+          DailyHotWaterEnergyProduced: 0,
+          DailyHotWaterEnergyConsumed: 0
+        }
+      });
+      jest.spyOn(copHelper as any, 'pushSnapshot').mockResolvedValue(undefined);
+
+      await copHelper.compute('daily');
+
+      expect(melDataSpy).not.toHaveBeenCalled();
+      const snapshot = (copHelper as any).pushSnapshot.mock.calls[0][1];
+      expect(snapshot.water.cop).toBeCloseTo(2.94, 2);
+      expect(snapshot.heat.cop).toBe(0); // 0 produced -> COP 0 (correct, not a bug)
+    });
+
     it('should handle missing MELCloud data', async () => {
       // Mock getMELCloudData to return null
       jest.spyOn(copHelper as any, 'getMELCloudData').mockResolvedValue(null);

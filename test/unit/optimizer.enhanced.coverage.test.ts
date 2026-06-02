@@ -141,6 +141,92 @@ describe('Optimizer hotwater & enhanced edge cases', () => {
     expect(result.tankData).toBeDefined();
   });
 
+  describe('heat-demand gate (Fix 4)', () => {
+    // Prices that want a preheat: current hour cheapest, rest expensive -> target rises to band max.
+    const preheatPrices = () => {
+      const nowIso = new Date().toISOString();
+      return {
+        current: { price: 0.1, time: nowIso },
+        prices: new Array(24).fill(0).map((_, i) => ({
+          price: i === 0 ? 0.1 : 1.5,
+          time: new Date(Date.now() + i * 3600000).toISOString()
+        })),
+        priceLevel: 'CHEAP'
+      };
+    };
+
+    test('holds zone1 write when room is above the comfort band (no heat possible)', async () => {
+      optimizer.setTemperatureConstraints(18, 22, 0.5);
+      mockTibber.getPrices.mockResolvedValue(preheatPrices());
+      mockMel.getDeviceState.mockResolvedValue({
+        RoomTemperature: 26,           // well above band max 22 (solar gain)
+        RoomTemperatureZone1: 26,
+        SetTemperature: 20,
+        SetTemperatureZone1: 20,
+        OutdoorTemperature: 24,
+        IdleZone1: true
+      });
+
+      const result = await optimizer.runOptimization();
+
+      expect(mockMel.setDeviceTemperature).not.toHaveBeenCalled();
+      expect(result.reason).toMatch(/above comfort band/i);
+    });
+
+    test('control: same price scenario DOES apply when room is within the band', async () => {
+      optimizer.setTemperatureConstraints(18, 22, 0.5);
+      mockTibber.getPrices.mockResolvedValue(preheatPrices());
+      mockMel.getDeviceState.mockResolvedValue({
+        RoomTemperature: 20,           // within band -> gate inert, heating possible
+        RoomTemperatureZone1: 20,
+        SetTemperature: 20,
+        SetTemperatureZone1: 20,
+        OutdoorTemperature: 5,
+        IdleZone1: false
+      });
+
+      await optimizer.runOptimization();
+
+      expect(mockMel.setDeviceTemperature).toHaveBeenCalled();
+    });
+  });
+
+  test('persists tank lockout timestamp on a tank-only apply (zone1 not applied)', async () => {
+    // Regression for DHW-3: in summer zone1 never applies, so the tank change must still be
+    // persisted to settings or the anti-cycling lockout is lost on restart.
+    const homey: any = {
+      settings: {
+        get: jest.fn().mockReturnValue(undefined),
+        set: jest.fn()
+      }
+    };
+    optimizer = new Optimizer(mockMel, mockTibber, 'device-1', 1, logger as any, undefined, homey);
+
+    const zone1Result: any = {
+      needsApply: false,        // zone1 holds (summer: room above band / no demand)
+      lockoutActive: false,
+      duplicateTarget: false,
+      changed: false,
+      targetTemp: 20,
+      safeCurrentTarget: 20,
+      tempDifference: 0
+    };
+    const tankResult: any = {
+      needsApply: true,
+      fromTemp: 48,
+      toTemp: 46,
+      evaluatedAtMs: 1700000000000
+    };
+
+    const changes = await (optimizer as any).applySetpointChanges(zone1Result, null, tankResult, jest.fn());
+
+    expect(changes.tankApplied).toBe(true);
+    expect(changes.zone1Applied).toBe(false);
+    expect(mockMel.setTankTemperature).toHaveBeenCalledWith('device-1', 1, 46);
+    // The fix: timestamp persisted even though zone1 did not apply.
+    expect(homey.settings.set).toHaveBeenCalledWith('last_tank_setpoint_change_ms', 1700000000000);
+  });
+
   test('runOptimization forwards device state to the hot water service collector', async () => {
     const collectData = jest.fn().mockResolvedValue(true);
     const getUsageStatistics = jest.fn().mockReturnValue({
