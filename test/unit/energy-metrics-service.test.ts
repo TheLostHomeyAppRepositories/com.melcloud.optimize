@@ -285,6 +285,23 @@ describe('EnergyMetricsService', () => {
       );
       expect(belowThreshold).toBe('summer');
     });
+
+    it('should return summer when no heat is produced even if standby keeps consumption above threshold', () => {
+      // Live June case: 1.527 kWh consumed (standby), 0 produced, 1.794 hot water -> was stuck "transition".
+      const result = service.determineSeason(1.527, 1.794, 0);
+      expect(result).toBe('summer');
+    });
+
+    it('should preserve legacy classification when heatingProduced is omitted', () => {
+      // Same consumed/hotwater as above but no produced arg -> old behavior (transition).
+      expect(service.determineSeason(1.527, 1.794)).toBe('transition');
+    });
+
+    it('should NOT force summer in a genuine shoulder period with real heat output', () => {
+      // Real heating happening (produced above the floor) -> classifier unaffected by the guard.
+      const result = service.determineSeason(8, 5, 6);
+      expect(result).toBe('transition');
+    });
   });
 
   describe('determineOptimizationFocus', () => {

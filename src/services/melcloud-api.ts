@@ -645,24 +645,34 @@ export class MelCloudApi extends BaseApiService {
    */
   async getWeeklyAverageCOP(deviceId: string, buildingId: number): Promise<{ heating: number; hotWater: number }> {
     try {
-      // Get device state to access energy data
-      const deviceState = await this.getDeviceState(deviceId, buildingId);
+      // Prefer the accurate EnergyCost/Report aggregates. The instantaneous device-state Daily*
+      // fields read 0 on some units, which previously made this endpoint always return 0 (DHW-2).
+      let producedHeating = 0;
+      let consumedHeating = 0;
+      let producedHW = 0;
+      let consumedHW = 0;
 
-      // Calculate COP for heating
-      let heatingCOP = 0;
-      if (deviceState.DailyHeatingEnergyProduced && deviceState.DailyHeatingEnergyConsumed) {
-        if (deviceState.DailyHeatingEnergyConsumed > 0) {
-          heatingCOP = deviceState.DailyHeatingEnergyProduced / deviceState.DailyHeatingEnergyConsumed;
-        }
+      try {
+        const totals = await this.getDailyEnergyTotals(deviceId, buildingId);
+        producedHeating = totals?.TotalHeatingProduced || 0;
+        consumedHeating = totals?.TotalHeatingConsumed || 0;
+        producedHW = totals?.TotalHotWaterProduced || 0;
+        consumedHW = totals?.TotalHotWaterConsumed || 0;
+      } catch {
+        // fall through to device-state below
       }
 
-      // Calculate COP for hot water
-      let hotWaterCOP = 0;
-      if (deviceState.DailyHotWaterEnergyProduced && deviceState.DailyHotWaterEnergyConsumed) {
-        if (deviceState.DailyHotWaterEnergyConsumed > 0) {
-          hotWaterCOP = deviceState.DailyHotWaterEnergyProduced / deviceState.DailyHotWaterEnergyConsumed;
-        }
+      // Fallback to instantaneous device-state daily counters when totals are unavailable.
+      if (consumedHeating <= 0 && consumedHW <= 0) {
+        const deviceState = await this.getDeviceState(deviceId, buildingId);
+        producedHeating = deviceState.DailyHeatingEnergyProduced || 0;
+        consumedHeating = deviceState.DailyHeatingEnergyConsumed || 0;
+        producedHW = deviceState.DailyHotWaterEnergyProduced || 0;
+        consumedHW = deviceState.DailyHotWaterEnergyConsumed || 0;
       }
+
+      const heatingCOP = consumedHeating > 0 ? producedHeating / consumedHeating : 0;
+      const hotWaterCOP = consumedHW > 0 ? producedHW / consumedHW : 0;
 
       this.logger.log(`Weekly average COP for device ${deviceId}: Heating=${heatingCOP.toFixed(2)}, Hot Water=${hotWaterCOP.toFixed(2)}`);
 

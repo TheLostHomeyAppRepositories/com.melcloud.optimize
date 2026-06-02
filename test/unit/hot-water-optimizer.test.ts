@@ -540,6 +540,33 @@ describe('HotWaterOptimizer', () => {
       expect(result.reasoning).toContain('saves');
       expect(result.reasoning).toContain('NOK');
     });
+
+    test('reasoning reflects a price-driven delay rather than the generic predictive template (Fix 6)', () => {
+      // Expensive current hour, peak far away -> action should be 'delay' with price wording.
+      // next24h[0] is the first array element (the "now" price), so make element 0 expensive.
+      const priceData = Array.from({ length: 24 }, (_, i) => ({
+        hour: i,
+        time: `${i}:00`,
+        price: i === 0 ? 2.0 : 0.6
+      }));
+      const usagePattern = {
+        peakHours: [8], // far from current hour 20
+        hourlyDemand: Array(24).fill(0.1).map((v, i) => (i === 8 ? 0.8 : v))
+      };
+
+      const result = hotWaterOptimizer.optimizeHotWaterSchedulingByPattern(
+        20, // current hour: expensive, no peak within 2h
+        priceData,
+        3.0,
+        usagePattern,
+        undefined,
+        { currencyCode: 'NOK', estimatedDailyHotWaterKwh: 2 }
+      );
+
+      expect(result.currentAction).toBe('delay');
+      expect(result.reasoning).toMatch(/conserving tank|price high/i);
+      expect(result.reasoning).not.toMatch(/Predictive scheduling based on usage pattern/);
+    });
   });
 
   test('optimizeHotWaterSchedulingByPattern keeps late-evening peaks in the next-day planning window', () => {

@@ -603,12 +603,18 @@ export class HotWaterOptimizer {
 
             // Determine current action
             let currentAction: 'heat_now' | 'delay' | 'maintain' = 'maintain';
+            // Reason that reflects what actually drove the decision (Fix 6). Previously a single
+            // "Predictive scheduling…" template was returned for every branch, so a price-driven
+            // delay was mislabeled as predictive scheduling.
+            let actionReason = 'Holding tank setpoint (no immediate action)';
+            const peaksStr = usagePattern.peakHours.join(', ');
 
             // Check if current hour is a scheduled heating time
             const isScheduledNow = schedulePoints.some(point => point.hour === currentHour);
 
             if (isScheduledNow) {
                 currentAction = 'heat_now';
+                actionReason = `Pre-heating in scheduled cheap window ahead of usage peaks (${peaksStr}h)`;
             } else {
                 // Check if we're approaching a peak and haven't heated yet
                 const nextPeak = usagePattern.peakHours.find(peak => {
@@ -619,10 +625,12 @@ export class HotWaterOptimizer {
                 if (nextPeak && hotWaterCOP > 0) {
                     // Emergency heating before peak
                     currentAction = 'heat_now';
+                    actionReason = `Pre-heating: usage peak within 2h (peak at ${nextPeak}h)`;
                 } else {
                     // Check if current price is exceptional
                     const currentPrice = Number.isFinite(next24h[0]?.price) ? next24h[0].price : 0;
                     const avgPrice = next24h.reduce((sum: number, p: any) => sum + (Number.isFinite(p.price) ? p.price : 0), 0) / next24h.length;
+                    const priceRatio = avgPrice > 0 ? currentPrice / avgPrice : 1;
 
                     // Convert user's cheap percentile to price ratio threshold
                     const priceRatioThreshold = 1.0 - (this.priceAnalyzer.getCheapPercentile() * 1.2);
@@ -631,9 +639,13 @@ export class HotWaterOptimizer {
                     const normalizedHWCOP = CopNormalizer.roughNormalize(hotWaterCOP, 4.0);
                     if (currentPrice < avgPrice * priceRatioThreshold && normalizedHWCOP > COP_THRESHOLDS.GOOD) {
                         currentAction = 'heat_now';
+                        actionReason = `Heating now: price low (${priceRatio.toFixed(2)}× avg) and COP favourable`;
                     } else if (currentPrice > avgPrice * (1 + this.priceAnalyzer.getCheapPercentile() * 1.2)) {
                         // Expensive hour: reduce tank to save energy, heat later at cheaper price
                         currentAction = 'delay';
+                        actionReason = `Conserving tank: price high (${priceRatio.toFixed(2)}× avg), reheat later at cheaper price`;
+                    } else {
+                        actionReason = `Holding tank setpoint (price ${priceRatio.toFixed(2)}× avg, near normal)`;
                     }
                 }
             }
@@ -662,7 +674,9 @@ export class HotWaterOptimizer {
             return {
                 schedulePoints,
                 currentAction,
-                reasoning: `Predictive scheduling based on usage pattern (peaks: ${usagePattern.peakHours.join(', ')}h, saves ${estimatedSavings.toFixed(2)} ${currencyCode})`,
+                reasoning: currentAction === 'maintain'
+                    ? actionReason
+                    : `${actionReason} (peaks: ${peaksStr}h, saves ${estimatedSavings.toFixed(2)} ${currencyCode})`,
                 estimatedSavings
             };
 

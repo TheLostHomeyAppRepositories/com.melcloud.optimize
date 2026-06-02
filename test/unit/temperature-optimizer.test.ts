@@ -498,6 +498,30 @@ describe('TemperatureOptimizer', () => {
         expect(mockCopNormalizer.updateRange).toHaveBeenCalledWith(2.8);
         expect(mockCopNormalizer.updateRange).toHaveBeenCalledWith(2.5);
       });
+
+      it('should NOT apply the low-efficiency penalty when heating COP is unmeasured (Fix 5)', async () => {
+        // Unmeasured: no recent heat output -> realHeatingCOP 0. The -0.4°C penalty must not fire.
+        const unmeasured = createMockMetrics({ seasonalMode: 'transition', realHeatingCOP: 0, realHotWaterCOP: 2.5 });
+        mockCopNormalizer.normalize.mockReturnValue(0); // efficiency 0, but it's a non-measurement
+
+        const unmeasuredResult = await optimizer.calculateOptimalTemperatureWithRealData(
+          defaultPriceStats, 21.0, 12.0, defaultComfortBand, unmeasured
+        );
+
+        // Measured-but-low: real COP present and low -> penalty SHOULD fire.
+        const measuredLow = createMockMetrics({ seasonalMode: 'transition', realHeatingCOP: 1.0, realHotWaterCOP: 2.5 });
+        mockCopNormalizer.normalize.mockReturnValue(0.2); // < TRANSITION_EFFICIENCY_LOW (0.4)
+
+        const measuredLowResult = await optimizer.calculateOptimalTemperatureWithRealData(
+          defaultPriceStats, 21.0, 12.0, defaultComfortBand, measuredLow
+        );
+
+        expect(unmeasuredResult.reason).toMatch(/unmeasured/i);
+        expect(measuredLowResult.reason).toContain('Combined COP efficiency');
+        // The penalty (−0.4°C) only applies to the measured-low case, so it ends up lower.
+        expect(unmeasuredResult.targetTemp).toBeGreaterThan(measuredLowResult.targetTemp);
+        expect(unmeasuredResult.targetTemp - measuredLowResult.targetTemp).toBeCloseTo(0.4, 5);
+      });
     });
 
     // COP-based fine-tuning tests removed: the redundant fine-tuning block was removed

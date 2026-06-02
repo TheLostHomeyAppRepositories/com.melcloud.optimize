@@ -467,15 +467,21 @@ export class TemperatureOptimizer {
       const priceAdjustment = (0.5 - normalizedPrice) * tempRange * priceWeight;
 
       // Combined efficiency adjustment
+      // Only penalize on low efficiency when the COP is actually measured. When heatingProduced=0
+      // (e.g. no space heating in summer), realHeatingCOP is 0 — that is a non-measurement, not poor
+      // performance, so applying the −0.4°C reduction would bias the setpoint down for no reason.
+      const copMeasured = metrics.realHeatingCOP > 0;
       let efficiencyAdjustment = 0;
       if (combinedEfficiency > TRANSITION_EFFICIENCY_HIGH) {
         efficiencyAdjustment = adaptiveParams?.copEfficiencyBonusMedium || DEFAULT_WEIGHTS.COP_EFFICIENCY_BONUS_MEDIUM;
-      } else if (combinedEfficiency < TRANSITION_EFFICIENCY_LOW) {
+      } else if (combinedEfficiency < TRANSITION_EFFICIENCY_LOW && copMeasured) {
         efficiencyAdjustment = TRANSITION_EFFICIENCY_REDUCTION;
       }
 
       targetTemp = midTemp + priceAdjustment + efficiencyAdjustment;
-      reason = `Transition mode: Combined COP efficiency ${(combinedEfficiency * 100).toFixed(0)}%, adapting to both heating and hot water needs`;
+      reason = copMeasured
+        ? `Transition mode: Combined COP efficiency ${(combinedEfficiency * 100).toFixed(0)}%, adapting to both heating and hot water needs`
+        : `Transition mode: heating COP unmeasured (no recent heat output), price-driven only`;
     }
 
     // COP-based fine-tuning removed: the per-season blocks above (summer/winter/transition)
