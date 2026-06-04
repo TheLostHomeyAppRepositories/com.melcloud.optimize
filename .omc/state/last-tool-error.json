@@ -1,0 +1,7 @@
+{
+  "tool_name": "StructuredOutput",
+  "tool_input_preview": "{\"summary\":\"DHW learner sums heat pump energy produced not user draw so 3 to 5am peak is night reheat mislabeled as demand. confidence count vanity. data bounded 7 day window. no seasonal split.</summ...",
+  "error": "Output does not match required schema: root: must have required property 'findings'",
+  "timestamp": "2026-06-02T18:24:27.749Z",
+  "retry_count": 52
+}
