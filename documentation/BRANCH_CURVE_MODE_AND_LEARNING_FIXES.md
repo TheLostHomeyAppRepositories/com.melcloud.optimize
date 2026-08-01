@@ -346,6 +346,21 @@ Compare **behaviour**, not headline savings.
 | Are DHW peaks plausible? | `getModelConfidence.hotWaterPatterns.hourlyUsagePattern` | Should show household-shaped peaks (morning/evening), not the app's own heating hours |
 | Does the flat-day gate work? | Log line `DHW scheduling held: price spread too small` | Fires on low-spread days |
 
+### Quick check
+
+```bash
+npm run check:health
+```
+
+`scripts/check-optimizer-health.mjs` reads the live device and reports PASS/WARN/FAIL on the
+signals this branch was meant to change: price weights pinned at a bound, strategy parameters
+collapsed, a negative heating rate, a night-heavy DHW peak profile (the signature of the old
+reheat-derived signal), the season-detector disagreement, and the unfixed savings field mixup.
+Exit code 1 if anything FAILs.
+
+Note: the Homey CLI exits before flushing a piped stdout, truncating responses at 8 KB. The
+script redirects to a temp file instead — do the same in any new tooling.
+
 ### Endpoints
 
 ```bash
