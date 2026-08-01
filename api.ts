@@ -496,6 +496,39 @@ const apiHandlers: ApiHandlers = {
     }
   },
 
+  postResetLearnedState: async ({ homey, body }: ApiHandlerContext): Promise<{
+    success: boolean;
+    message: string;
+    result?: unknown;
+  }> => {
+    homey.app.log('API method postResetLearnedState called');
+
+    try {
+      const activeOptimizer = requireOptimizer();
+      const clearThermalData = (body as { clearThermalData?: boolean } | undefined)?.clearThermalData !== false;
+      const result = activeOptimizer.resetLearnedState({ clearThermalData });
+
+      const weights = result.adaptiveParameters;
+      const summary = weights
+        ? `price weights ${weights.before.priceWeightSummer}/${weights.before.priceWeightWinter}/${weights.before.priceWeightTransition} → ` +
+          `${weights.after.priceWeightSummer}/${weights.after.priceWeightWinter}/${weights.after.priceWeightTransition} (summer/winter/transition)`
+        : 'adaptive parameters unavailable';
+
+      return {
+        success: true,
+        message: `Learned state reset: ${summary}. Thermal model reset${result.thermalDataCleared ? ' and collected data cleared' : ''}.`,
+        result
+      };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      homey.app.error('Error resetting learned state:', error);
+      return {
+        success: false,
+        message: `Error resetting learned state: ${message}`
+      };
+    }
+  },
+
   postHotWaterClearData: async ({ homey, body }: ApiHandlerContext): Promise<HotWaterResponse> => {
     homey.app.log('API method postHotWaterClearData called');
     const service = getHotWaterService(homey);

@@ -53,16 +53,15 @@ export interface AdaptiveParameters {
 // Settings key for storing adaptive parameters
 const ADAPTIVE_PARAMETERS_SETTINGS_KEY = 'adaptive_business_parameters';
 
-/** Stored seasonal price weights alongside the values they would reset to. */
-export interface SeasonalPriceWeights {
-  summer: number;
-  winter: number;
-  transition: number;
-  defaults: {
-    summer: number;
-    winter: number;
-    transition: number;
-  };
+/** Stored (unblended) learned control parameters, for diagnostics and reset reporting. */
+export interface LearnedControlParameters {
+  priceWeightSummer: number;
+  priceWeightWinter: number;
+  priceWeightTransition: number;
+  preheatAggressiveness: number;
+  coastingReduction: number;
+  boostIncrease: number;
+  learningCycles: number;
 }
 
 // Default parameters (current hardcoded values that will be adapted)
@@ -162,39 +161,45 @@ export class AdaptiveParametersLearner {
   }
   
   /**
-   * Reset only the seasonal price weights to their defaults.
+   * Reset the learned control parameters to their defaults.
    *
-   * These weights are driven by learnFromOutcome and are clamped to [0.2, 0.9]. A long run of
-   * misattributed comfort violations (e.g. summer solar gain scored against the optimizer) can
-   * ratchet them to the 0.2 floor, leaving the optimizer barely responsive to electricity price.
-   * Learning cycles and confidence are intentionally preserved.
+   * Seasonal price weights are clamped to [0.2, 0.9] and the strategy parameters are clamped
+   * similarly, so a long run of misattributed comfort violations drives them to their bounds:
+   * observed on a live device at 5547 cycles, priceWeightSummer and priceWeightTransition had
+   * both floored at 0.2 while priceWeightWinter had pinned at the 0.9 ceiling, and
+   * preheatAggressiveness/coastingReduction had fallen from 2.0/1.5 to 0.5/0.5.
+   *
+   * Learning cycles are intentionally preserved — this resets what was learned, not the record
+   * that learning happened.
    */
-  public resetPriceWeights(): { before: SeasonalPriceWeights; after: SeasonalPriceWeights } {
-    const before = this.getRawPriceWeights();
+  public resetLearnedParameters(): { before: LearnedControlParameters; after: LearnedControlParameters } {
+    const before = this.getLearnedControlParameters();
 
     this.parameters.priceWeightSummer = DEFAULT_PARAMETERS.priceWeightSummer;
     this.parameters.priceWeightWinter = DEFAULT_PARAMETERS.priceWeightWinter;
     this.parameters.priceWeightTransition = DEFAULT_PARAMETERS.priceWeightTransition;
+    this.parameters.preheatAggressiveness = DEFAULT_PARAMETERS.preheatAggressiveness;
+    this.parameters.coastingReduction = DEFAULT_PARAMETERS.coastingReduction;
+    this.parameters.boostIncrease = DEFAULT_PARAMETERS.boostIncrease;
     this.parameters.lastUpdated = new Date().toISOString();
     this.saveParameters();
 
-    return { before, after: this.getRawPriceWeights() };
+    return { before, after: this.getLearnedControlParameters() };
   }
 
   /**
-   * Raw (unblended) seasonal price weights, for diagnostics.
+   * Raw (unblended) learned control parameters, for diagnostics.
    * getParameters() may blend toward defaults at low confidence; this reports what is stored.
    */
-  public getRawPriceWeights(): SeasonalPriceWeights {
+  public getLearnedControlParameters(): LearnedControlParameters {
     return {
-      summer: this.parameters.priceWeightSummer,
-      winter: this.parameters.priceWeightWinter,
-      transition: this.parameters.priceWeightTransition,
-      defaults: {
-        summer: DEFAULT_PARAMETERS.priceWeightSummer,
-        winter: DEFAULT_PARAMETERS.priceWeightWinter,
-        transition: DEFAULT_PARAMETERS.priceWeightTransition
-      }
+      priceWeightSummer: this.parameters.priceWeightSummer,
+      priceWeightWinter: this.parameters.priceWeightWinter,
+      priceWeightTransition: this.parameters.priceWeightTransition,
+      preheatAggressiveness: this.parameters.preheatAggressiveness,
+      coastingReduction: this.parameters.coastingReduction,
+      boostIncrease: this.parameters.boostIncrease,
+      learningCycles: this.parameters.learningCycles
     };
   }
 

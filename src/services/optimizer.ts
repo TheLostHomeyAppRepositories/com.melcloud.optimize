@@ -4,7 +4,7 @@ import { MelCloudApi } from './melcloud-api';
 import { PriceAnalyzer } from './price-analyzer';
 import { ThermalController } from './thermal-controller';
 import { COPHelper } from './cop-helper';
-import { ThermalModelService } from './thermal-model';
+import { ThermalModelService, ThermalCharacteristics } from './thermal-model';
 import { EnhancedSavingsCalculator, SavingsCalculationResult, OptimizationData } from '../util/enhanced-savings-calculator';
 import { HotWaterOptimizer } from './hot-water-optimizer';
 import { ZoneOptimizer } from './zone-optimizer';
@@ -41,7 +41,7 @@ import { computePlanningBias, updateThermalResponse } from './planning-utils';
 import { applySetpointConstraints } from '../util/setpoint-constraints';
 import { SettingsAccessor } from '../util/settings-accessor';
 import { isNightHour } from '../util/night-setback';
-import { AdaptiveParametersLearner } from './adaptive-parameters';
+import { AdaptiveParametersLearner, LearnedControlParameters } from './adaptive-parameters';
 import { COMFORT_CONSTANTS } from '../constants';
 import { resolvePriceThresholds } from './price-classifier';
 import { isRoomTargetMode, describeZoneMode } from '../util/zone-mode';
@@ -866,6 +866,47 @@ export class Optimizer {
    */
   public getSavingsService(): SavingsService {
     return this.savingsService;
+  }
+
+  /**
+   * Reset everything the optimizer has learned back to defaults.
+   *
+   * Intended for recovery after the learning inputs turn out to have been invalid — for example
+   * comfort violations misattributed to the optimizer (which ratchet the price weights and
+   * strategy parameters to their bounds), or thermal data collected while the device was in
+   * Flow/Curve mode (which teaches a negative heating rate). Neither condition self-corrects:
+   * the parameters are clamped at their bounds and the thermal model reports full confidence.
+   *
+   * @param options.clearThermalData Discard collected thermal samples as well, so the next
+   *   analysis cannot simply relearn the same characteristics from the same bad data.
+   */
+  public resetLearnedState(options: { clearThermalData?: boolean } = {}): {
+    adaptiveParameters: { before: LearnedControlParameters; after: LearnedControlParameters } | null;
+    thermalModel: ThermalCharacteristics | null;
+    thermalDataCleared: boolean;
+  } {
+    const clearThermalData = options.clearThermalData !== false;
+
+    let adaptiveParameters: { before: LearnedControlParameters; after: LearnedControlParameters } | null = null;
+    if (this.adaptiveParametersLearner) {
+      adaptiveParameters = this.adaptiveParametersLearner.resetLearnedParameters();
+      this.logger.log(
+        `Adaptive parameters reset: priceWeight summer ${adaptiveParameters.before.priceWeightSummer}→${adaptiveParameters.after.priceWeightSummer}, ` +
+        `winter ${adaptiveParameters.before.priceWeightWinter}→${adaptiveParameters.after.priceWeightWinter}, ` +
+        `transition ${adaptiveParameters.before.priceWeightTransition}→${adaptiveParameters.after.priceWeightTransition}`
+      );
+    }
+
+    let thermalModel: ThermalCharacteristics | null = null;
+    if (this.thermalModelService) {
+      thermalModel = this.thermalModelService.resetModel(clearThermalData);
+    }
+
+    return {
+      adaptiveParameters,
+      thermalModel,
+      thermalDataCleared: clearThermalData && this.thermalModelService !== null
+    };
   }
 
   /**

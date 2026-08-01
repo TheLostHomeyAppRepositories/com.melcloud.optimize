@@ -713,6 +713,7 @@ export interface ApiHandlers {
   updateOptimizerSettings(context: ApiHandlerContext): Promise<UpdateOptimizerSettingsResponse>;
   postHotWaterResetPatterns(context: ApiHandlerContext): Promise<HotWaterResponse>;
   postHotWaterClearData(context: ApiHandlerContext): Promise<HotWaterResponse>;
+  postResetLearnedState(context: ApiHandlerContext): Promise<{ success: boolean; message: string; result?: unknown }>;
   getHotWaterPatterns(context: ApiHandlerContext): Promise<HotWaterResponse>;
   getDeviceList(context: ApiHandlerContext): Promise<GetDeviceListResponse>;
   getRunHourlyOptimizer(context: ApiHandlerContext): Promise<GetRunHourlyOptimizerResponse>;
