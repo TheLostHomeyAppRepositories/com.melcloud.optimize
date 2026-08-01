@@ -504,20 +504,53 @@ const apiHandlers: ApiHandlers = {
     homey.app.log('API method postResetLearnedState called');
 
     try {
-      const activeOptimizer = requireOptimizer();
       const clearThermalData = (body as { clearThermalData?: boolean } | undefined)?.clearThermalData !== false;
-      const result = activeOptimizer.resetLearnedState({ clearThermalData });
 
-      const weights = result.adaptiveParameters;
-      const summary = weights
-        ? `price weights ${weights.before.priceWeightSummer}/${weights.before.priceWeightWinter}/${weights.before.priceWeightTransition} → ` +
-          `${weights.after.priceWeightSummer}/${weights.after.priceWeightWinter}/${weights.after.priceWeightTransition} (summer/winter/transition)`
-        : 'adaptive parameters unavailable';
+      // Reset the persisted state first. Homey settings are the source of truth and survive
+      // whether or not the optimizer happens to be initialised, so recovery must not depend on
+      // a live service. The learners' load paths spread stored values over their defaults, so
+      // deleting a key restores that key's default on next construction.
+      const before: Record<string, unknown> = {};
+      const RESET_KEYS = [
+        'priceWeightSummer', 'priceWeightWinter', 'priceWeightTransition',
+        'preheatAggressiveness', 'coastingReduction', 'boostIncrease'
+      ];
+
+      const rawAdaptive = homey.settings.get('adaptive_business_parameters');
+      if (rawAdaptive) {
+        const parsed = typeof rawAdaptive === 'string' ? JSON.parse(rawAdaptive) : { ...rawAdaptive };
+        for (const key of RESET_KEYS) {
+          before[key] = parsed[key];
+          delete parsed[key];
+        }
+        homey.settings.set('adaptive_business_parameters', JSON.stringify(parsed));
+      }
+
+      const rawThermal = homey.settings.get('thermal_model_characteristics');
+      before.thermalCharacteristics = typeof rawThermal === 'string' ? JSON.parse(rawThermal) : rawThermal ?? null;
+      homey.settings.set('thermal_model_characteristics', null);
+
+      if (clearThermalData) {
+        homey.settings.set('thermal_model_data', null);
+        homey.settings.set('thermal_model_aggregated_data', null);
+      }
+
+      // If the optimizer is live, also reset its in-memory copies, otherwise they would be
+      // written back over the settings on the next save.
+      let inMemoryReset = false;
+      try {
+        const activeOptimizer = requireOptimizer();
+        activeOptimizer.resetLearnedState({ clearThermalData });
+        inMemoryReset = true;
+      } catch {
+        homey.app.log('Optimizer not initialised; persisted state reset only (applies on next start)');
+      }
 
       return {
         success: true,
-        message: `Learned state reset: ${summary}. Thermal model reset${result.thermalDataCleared ? ' and collected data cleared' : ''}.`,
-        result
+        message: `Learned state reset to defaults${clearThermalData ? ', thermal data cleared' : ''}. ` +
+          (inMemoryReset ? 'Applied immediately.' : 'Applies on next optimizer start.'),
+        result: { before, clearThermalData, inMemoryReset }
       };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);

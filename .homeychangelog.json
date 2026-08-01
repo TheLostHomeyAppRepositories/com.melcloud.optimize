@@ -269,7 +269,7 @@
   "14.0.55": {
     "en": "Fixes learning on weather-compensation (Curve) heat pumps, stops summer solar gain from suppressing price optimisation, and guards a setpoint-freeze configuration."
   },
-  "14.0.56": {
+  "14.0.57": {
     "en": "Adds a recovery action that resets learned price weights, strategy parameters and the thermal model to defaults."
   }
 }
