@@ -99,12 +99,19 @@ export function applySetpointConstraints(input: SetpointConstraintsInput): Setpo
 
   let rampLimited = false;
   if (typeof maxDeltaPerChangeC === 'number' && maxDeltaPerChangeC > 0) {
+    // Deadlock guard: ramp-limiting runs before the deadband test below, so a ramp cap
+    // smaller than the deadband would clip every delta to a value that can never satisfy
+    // the deadband — freezing the setpoint permanently. Never ramp below the deadband.
+    const effectiveMaxDelta = Math.max(maxDeltaPerChangeC, Math.max(deadbandC, 0));
+    if (effectiveMaxDelta > maxDeltaPerChangeC + EPS) {
+      notes.push(`ramp raised from ${maxDeltaPerChangeC}°C to deadband ${deadbandC}°C to avoid freeze`);
+    }
     const delta = constrained - current;
-    const limitedDelta = Math.max(-maxDeltaPerChangeC, Math.min(maxDeltaPerChangeC, delta));
+    const limitedDelta = Math.max(-effectiveMaxDelta, Math.min(effectiveMaxDelta, delta));
     if (Math.abs(limitedDelta - delta) > EPS) {
       rampLimited = true;
       constrained = current + limitedDelta;
-      notes.push(`limited to ±${maxDeltaPerChangeC}°C ramp`);
+      notes.push(`limited to ±${effectiveMaxDelta}°C ramp`);
     }
   }
 

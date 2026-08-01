@@ -53,6 +53,18 @@ export interface AdaptiveParameters {
 // Settings key for storing adaptive parameters
 const ADAPTIVE_PARAMETERS_SETTINGS_KEY = 'adaptive_business_parameters';
 
+/** Stored seasonal price weights alongside the values they would reset to. */
+export interface SeasonalPriceWeights {
+  summer: number;
+  winter: number;
+  transition: number;
+  defaults: {
+    summer: number;
+    winter: number;
+    transition: number;
+  };
+}
+
 // Default parameters (current hardcoded values that will be adapted)
 const DEFAULT_PARAMETERS: AdaptiveParameters = {
   priceWeightSummer: 0.7,
@@ -149,6 +161,43 @@ export class AdaptiveParametersLearner {
     }
   }
   
+  /**
+   * Reset only the seasonal price weights to their defaults.
+   *
+   * These weights are driven by learnFromOutcome and are clamped to [0.2, 0.9]. A long run of
+   * misattributed comfort violations (e.g. summer solar gain scored against the optimizer) can
+   * ratchet them to the 0.2 floor, leaving the optimizer barely responsive to electricity price.
+   * Learning cycles and confidence are intentionally preserved.
+   */
+  public resetPriceWeights(): { before: SeasonalPriceWeights; after: SeasonalPriceWeights } {
+    const before = this.getRawPriceWeights();
+
+    this.parameters.priceWeightSummer = DEFAULT_PARAMETERS.priceWeightSummer;
+    this.parameters.priceWeightWinter = DEFAULT_PARAMETERS.priceWeightWinter;
+    this.parameters.priceWeightTransition = DEFAULT_PARAMETERS.priceWeightTransition;
+    this.parameters.lastUpdated = new Date().toISOString();
+    this.saveParameters();
+
+    return { before, after: this.getRawPriceWeights() };
+  }
+
+  /**
+   * Raw (unblended) seasonal price weights, for diagnostics.
+   * getParameters() may blend toward defaults at low confidence; this reports what is stored.
+   */
+  public getRawPriceWeights(): SeasonalPriceWeights {
+    return {
+      summer: this.parameters.priceWeightSummer,
+      winter: this.parameters.priceWeightWinter,
+      transition: this.parameters.priceWeightTransition,
+      defaults: {
+        summer: DEFAULT_PARAMETERS.priceWeightSummer,
+        winter: DEFAULT_PARAMETERS.priceWeightWinter,
+        transition: DEFAULT_PARAMETERS.priceWeightTransition
+      }
+    };
+  }
+
   /**
    * Get current parameters (with fallbacks to defaults if confidence is low)
    */

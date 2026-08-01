@@ -2540,7 +2540,15 @@ const apiHandlers: ApiHandlers = {
       let adaptiveParameters = {
         learningCycles: null as number | null,
         confidence: null as number | null,
-        lastUpdated: null as string | null
+        lastUpdated: null as string | null,
+        // Diagnostics: the seasonal price weights are clamped to [0.2, 0.9] and are driven down
+        // by comfort violations. Surfacing them makes drift toward the 0.2 floor observable
+        // instead of something that has to be inferred.
+        priceWeightSummer: null as number | null,
+        priceWeightWinter: null as number | null,
+        priceWeightTransition: null as number | null,
+        preheatAggressiveness: null as number | null,
+        coastingReduction: null as number | null
       };
 
       if (adaptiveParametersRaw) {
@@ -2552,7 +2560,12 @@ const apiHandlers: ApiHandlers = {
           adaptiveParameters = {
             learningCycles: parsed.learningCycles ?? null,
             confidence: parsed.confidence ?? null,
-            lastUpdated: parsed.lastUpdated ?? null
+            lastUpdated: parsed.lastUpdated ?? null,
+            priceWeightSummer: parsed.priceWeightSummer ?? null,
+            priceWeightWinter: parsed.priceWeightWinter ?? null,
+            priceWeightTransition: parsed.priceWeightTransition ?? null,
+            preheatAggressiveness: parsed.preheatAggressiveness ?? null,
+            coastingReduction: parsed.coastingReduction ?? null
           };
         } catch (parseErr) {
           homey.app.error('Failed to parse adaptive parameters:', parseErr);

@@ -65,6 +65,9 @@ export interface MelCloudDevice {
   RoomTemperatureZone1?: number;
   SetTemperature?: number;
   SetTemperatureZone1?: number;
+  /** ATW zone control mode: 0 = Room, 1 = Flow, 2 = Curve (weather compensation). */
+  OperationModeZone1?: number;
+  OperationModeZone2?: number;
   OutdoorTemperature: number;
   IdleZone1: boolean;
   DailyHeatingEnergyProduced?: number;

@@ -44,6 +44,7 @@ import { isNightHour } from '../util/night-setback';
 import { AdaptiveParametersLearner } from './adaptive-parameters';
 import { COMFORT_CONSTANTS } from '../constants';
 import { resolvePriceThresholds } from './price-classifier';
+import { isRoomTargetMode, describeZoneMode } from '../util/zone-mode';
 
 // Removed: DEFAULT_HOT_WATER_PEAK_HOURS now comes from HotWaterUsageLearner
 const MIN_SAVINGS_FOR_LEARNING = 0.05; // Minimum savings (SEK-equivalent) to trigger learning on no-change path
@@ -106,6 +107,14 @@ interface OptimizationInputs {
   previousIndoorTempTs: number | null;
   constraintsBand: { minTemp: number; maxTemp: number };
   safeCurrentTarget: number;
+  /** ATW zone-1 control mode reported by the device: 0 = Room, 1 = Flow, 2 = Curve. */
+  operationModeZone1: number | undefined;
+  /**
+   * True when the device's zone-1 setpoint is genuinely a room-temperature target.
+   * In Flow/Curve mode the setpoint is a water/curve reference, so it must not be
+   * interpreted as, or learned from as, a room target.
+   */
+  roomTargetIsRoomTemp: boolean;
 }
 
 interface Zone1OptimizationResult {
@@ -1061,7 +1070,17 @@ export class Optimizer {
   private async collectOptimizationInputs(logger: DecisionLogger): Promise<OptimizationInputs> {
     const deviceState = await this.melCloud.getDeviceState(this.deviceId, this.buildingId);
     const currentTemp = deviceState.RoomTemperature || deviceState.RoomTemperatureZone1;
-    const currentTarget = deviceState.SetTemperature || deviceState.SetTemperatureZone1;
+    // Prefer the ATW zone-1 register: it is the field the write path actually sets
+    // (see MelCloudApi.setDeviceTemperature). SetTemperature is the ATA-shaped field and
+    // reading it first made the read asymmetric with the write.
+    const currentTarget = deviceState.SetTemperatureZone1 ?? deviceState.SetTemperature;
+
+    // 0 = Room, 1 = Flow, 2 = Curve. Devices that do not report the field (ATA, older
+    // firmware) are treated as Room so existing behaviour is preserved.
+    const operationModeZone1 = typeof deviceState.OperationModeZone1 === 'number'
+      ? deviceState.OperationModeZone1
+      : undefined;
+    const roomTargetIsRoomTemp = isRoomTargetMode(operationModeZone1);
     const outdoorTemp = deviceState.OutdoorTemperature || 0;
 
     const hotWaterService = this.getHotWaterService();
@@ -1279,7 +1298,9 @@ export class Optimizer {
       previousIndoorTemp,
       previousIndoorTempTs,
       constraintsBand,
-      safeCurrentTarget
+      safeCurrentTarget,
+      operationModeZone1,
+      roomTargetIsRoomTemp
     };
   }
 
@@ -1295,7 +1316,9 @@ export class Optimizer {
       planningReferenceTimeMs,
       thermalResponse,
       constraintsBand,
-      safeCurrentTarget
+      safeCurrentTarget,
+      operationModeZone1,
+      roomTargetIsRoomTemp
     } = inputs;
 
     // Thermal learning moved to after weather fetch (see line ~1307)
@@ -1350,8 +1373,17 @@ export class Optimizer {
       }
     }
 
-    // Collect thermal learning data point AFTER weather fetch to use real weather data
-    if (this.useThermalLearning && this.thermalModelService) {
+    // Collect thermal learning data point AFTER weather fetch to use real weather data.
+    // Skipped outside Room mode: the thermal analyser derives its heating rate from
+    // (targetTemperature - indoorTemperature), and in Flow/Curve mode the setpoint is a water
+    // reference (e.g. 29°C) rather than a room target. That inflates the denominator and holds
+    // the heating branch permanently open, which is how the model learned a negative heating rate.
+    if (this.useThermalLearning && this.thermalModelService && !roomTargetIsRoomTemp) {
+      this.logger.log(
+        `Thermal data point skipped — zone1 is in ${describeZoneMode(operationModeZone1)} mode; ` +
+        `setpoint ${currentTarget ?? 'n/a'}°C is a water/curve reference, not a room target`
+      );
+    } else if (this.useThermalLearning && this.thermalModelService) {
       try {
         const dataPoint = {
           timestamp: new Date().toISOString(),
@@ -2227,7 +2259,21 @@ export class Optimizer {
       tank: 0,
       total: 0
     };
-    const comfortViolations = this.countComfortViolations(inputs.currentTemp, inputs.constraintsBand);
+    // Always drain the sample buffer, but only attribute comfort violations to the optimizer
+    // when it actually moved the setpoint. Otherwise summer solar gain — which pushes the room
+    // above the band while the optimizer is in heat-demand hold and wrote nothing — is scored
+    // as an optimizer failure, ratcheting the adaptive price weight down 2% every cycle until
+    // it pins at its 0.2 floor and the optimizer effectively stops responding to price.
+    const measuredComfortViolations = this.countComfortViolations(inputs.currentTemp, inputs.constraintsBand);
+    const optimizerAffectedRoom = applied.zone1Applied === true && zone1Result.heatDemandHold !== true;
+    const comfortViolations = optimizerAffectedRoom ? measuredComfortViolations : 0;
+
+    if (!optimizerAffectedRoom && measuredComfortViolations > 0) {
+      this.logger.log(
+        `Comfort deviation observed (${measuredComfortViolations}) but not attributed to the optimizer ` +
+        `(zone1Applied=${applied.zone1Applied === true}, heatDemandHold=${zone1Result.heatDemandHold === true})`
+      );
+    }
 
     if (applied.zone1Applied) {
       savings.zone1 = await this.savingsService.calculateRealHourlySavings(
