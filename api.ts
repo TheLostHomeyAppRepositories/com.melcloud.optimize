@@ -535,6 +535,14 @@ const apiHandlers: ApiHandlers = {
         homey.settings.set('thermal_model_aggregated_data', null);
       }
 
+      // The hot water usage pattern is learned state too. It is cleared rather than left to
+      // decay because the pattern and the signal it was derived from are not comparable: a
+      // profile learned from reheat timing cannot be blended with one learned from tank draw.
+      if ((body as { clearHotWaterPatterns?: boolean } | undefined)?.clearHotWaterPatterns) {
+        before.hotWaterPatterns = homey.settings.get('hot_water_usage_patterns') ?? null;
+        homey.settings.set('hot_water_usage_patterns', null);
+      }
+
       // If the optimizer is live, also reset its in-memory copies, otherwise they would be
       // written back over the settings on the next save.
       let inMemoryReset = false;
