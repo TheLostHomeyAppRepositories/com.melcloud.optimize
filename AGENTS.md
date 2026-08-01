@@ -106,6 +106,34 @@ This prevents the optimizer from lowering temperature during NORMAL price period
 | [`documentation/ALGORITHM_REFERENCE.md`](file:///Users/kjetilvetlejord/Documents/mel/com.melcloud.optimize/documentation/ALGORITHM_REFERENCE.md) | Optimization algorithms |
 | [`documentation/MELCLOUD_API_REFERENCE.md`](file:///Users/kjetilvetlejord/Documents/mel/com.melcloud.optimize/documentation/MELCLOUD_API_REFERENCE.md) | MELCloud API patterns |
 | [`documentation/USER_GUIDE.md`](file:///Users/kjetilvetlejord/Documents/mel/com.melcloud.optimize/documentation/USER_GUIDE.md) | End-user documentation |
+| [`documentation/BRANCH_CURVE_MODE_AND_LEARNING_FIXES.md`](file:///Users/kjetilvetlejord/Documents/mel/com.melcloud.optimize/documentation/BRANCH_CURVE_MODE_AND_LEARNING_FIXES.md) | **Read before changing control or learning logic.** Live measurements, root causes, validated price/COP economics, refuted hypotheses |
+
+---
+
+## Before changing control or learning logic
+
+Read [`documentation/BRANCH_CURVE_MODE_AND_LEARNING_FIXES.md`](file:///Users/kjetilvetlejord/Documents/mel/com.melcloud.optimize/documentation/BRANCH_CURVE_MODE_AND_LEARNING_FIXES.md) first.
+It records a 2026-08-01 investigation against a live device and will save you re-deriving it.
+The points most likely to bite:
+
+1. **Optimize the delivered price, not spot.** Swedish per-kWh adders (~0.85 SEK/kWh) are equal in
+   every hour, so they compress ratios: a 2.19x spot spread is only 1.26x at the meter. Use
+   `analysePriceSpread` in `src/util/price-spread.ts`. Note that retiming the same energy and
+   spending extra energy need *different* tests with very different thresholds.
+2. **Coasting beats preheating.** Down-shifts save cost *and* energy; preheating saves cost but
+   burns more. Preheat only in the bottom price quartile. Tibber's published envelope is
+   -3 K down / +1 K up.
+3. **`SetTemperatureZone1`, not `SetTemperature`.** The latter is ATA-shaped and was the source of
+   a nonsense 29 C "room target" that poisoned the thermal model.
+4. **Never learn from a device that is not in Room mode** (`OperationModeZone1 === 0`). In
+   Flow/Curve mode the zone setpoint is not a room target. There is **no remote curve offset** in
+   MELCloud or in the local FTC protocol.
+5. **Attribute comfort violations only when the optimizer actually moved the setpoint.** Summer
+   solar gain otherwise ratchets every learned parameter to its bound - measured, not theoretical.
+6. **Write magnitude and write frequency are independent** (`maxDeltaPerChangeC` vs
+   `minChangeMinutes`). Widening the ramp reduces total writes; it does not increase them.
+7. **Confidence values in this codebase are sample counts, not accuracy.** Nothing computes a
+   residual. Do not treat "100% confidence" as meaning the model is right.
 
 ---
 
