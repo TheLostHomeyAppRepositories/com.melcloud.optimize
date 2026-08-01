@@ -265,5 +265,8 @@
   },
   "14.0.53": {
     "en": "Bug hunting"
+  },
+  "14.0.55": {
+    "en": "Fixes learning on weather-compensation (Curve) heat pumps, stops summer solar gain from suppressing price optimisation, and guards a setpoint-freeze configuration."
   }
 }
