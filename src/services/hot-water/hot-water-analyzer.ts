@@ -7,6 +7,7 @@
  */
 
 import { DateTime } from 'luxon';
+import { estimateHourlyDraw, normaliseDrawPattern } from '../../util/dhw-draw';
 import { HotWaterDataCollector, HotWaterUsageDataPoint, AggregatedHotWaterDataPoint } from './hot-water-data-collector';
 
 // Settings key for hot water usage patterns
@@ -129,25 +130,26 @@ export class HotWaterAnalyzer {
 
       this.homey.log(`Analyzing ${detailed.length} hot water usage data points for pattern detection`);
 
-      // Calculate hourly usage pattern
-      const hourlyUsage = new Array(24).fill(0);
-      const hourlyWeight = new Array(24).fill(0);
+      // Hourly usage is derived from tank temperature falling while the pump is idle, not from
+      // the pump's own DHW production. Production measures reheat, which happens when the
+      // optimizer permits it rather than when someone runs a tap — learning from it makes the
+      // optimizer's own heating hours reappear as tomorrow's "usage peaks".
+      const drawEstimate = estimateHourlyDraw(
+        detailed.map(dp => ({
+          timestamp: dp.timestamp,
+          tankTemperature: dp.tankTemperature,
+          isHeating: dp.isHeating,
+          hourOfDay: dp.hourOfDay
+        })),
+        { weightFn: dp => this.getRecencyWeight(dp as any, analysisNow) }
+      );
 
-      detailed.forEach(dp => {
-        const weight = this.getRecencyWeight(dp, analysisNow);
-        hourlyUsage[dp.hourOfDay] += Math.max(dp.hotWaterEnergyProduced, 0) * weight;
-        hourlyWeight[dp.hourOfDay] += weight;
-      });
+      const normalizedHourlyUsage = normaliseDrawPattern(drawEstimate.hourlyDraw);
 
-      // Calculate average usage per hour
-      const hourlyUsagePattern = hourlyUsage.map((usage, hour) => {
-        return hourlyWeight[hour] > 0 ? usage / hourlyWeight[hour] : 0;
-      });
-
-      // Normalize hourly usage pattern (average = 1)
-      const hourlyAvg = hourlyUsagePattern.reduce((sum, val) => sum + val, 0) / 24;
-      const normalizedHourlyUsage = hourlyUsagePattern.map(val => {
-        return hourlyAvg > 0 ? val / hourlyAvg : 0;
+      this.homey.log('Hot water draw pattern derived from tank temperature', {
+        usableIntervals: drawEstimate.usableIntervals,
+        hoursCovered: drawEstimate.hoursCovered,
+        hasSignal: normalizedHourlyUsage.some(v => v > 0)
       });
 
       // Calculate daily usage pattern
@@ -196,8 +198,14 @@ export class HotWaterAnalyzer {
         });
       });
 
-      // Calculate confidence based on data quantity
-      const confidence = Math.min(100, (detailed.length / FULL_CONFIDENCE_DATA_POINTS) * 100);
+      // Confidence is based on how many intervals actually carry a draw signal, not on how many
+      // samples were stored. Sampling is every 5 minutes, so counting raw samples against a
+      // denominator meant for hourly data reached "100% confidence" in about 14 hours — and
+      // counted reheat intervals, which carry no information about draw, towards it.
+      const confidence = Math.min(
+        100,
+        (drawEstimate.usableIntervals / FULL_CONFIDENCE_DATA_POINTS) * 100
+      );
 
       // Adaptive blend factor: increases with confidence to reduce anchor bias
       // At low confidence (0%): 60% new, 40% old (stable but allows learning)

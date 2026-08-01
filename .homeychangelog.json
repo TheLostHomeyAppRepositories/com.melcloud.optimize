@@ -277,5 +277,8 @@
   },
   "14.0.59": {
     "en": "Hot water now commits to reheating at the cheap hour it picked, and stays put when the day is too flat for shifting to pay."
+  },
+  "14.0.60": {
+    "en": "Hot water usage is now learned from actual tank draw instead of the heat pump reheating, so peak hours reflect your household rather than the app schedule."
   }
 }
