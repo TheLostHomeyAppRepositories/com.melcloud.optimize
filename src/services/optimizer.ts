@@ -49,6 +49,16 @@ import { isRoomTargetMode, describeZoneMode } from '../util/zone-mode';
 // Removed: DEFAULT_HOT_WATER_PEAK_HOURS now comes from HotWaterUsageLearner
 const MIN_SAVINGS_FOR_LEARNING = 0.05; // Minimum savings (SEK-equivalent) to trigger learning on no-change path
 
+/**
+ * Dead zone applied to the tank target on a 'maintain' signal, in °C.
+ *
+ * 'maintain' means no strong price or usage signal, but the targets it resolves to are
+ * memoryless band fractions of the current price level. Without hysteresis the tank chases
+ * every price-level boundary crossing, producing an hourly setpoint write and continuous
+ * compressor churn for a saving that does not cover the cycling.
+ */
+const MAINTAIN_TANK_HYSTERESIS_C = 2.0;
+
 type DecisionLogger = (event: string, payload: Record<string, unknown>) => void;
 type ConstraintResult = ReturnType<typeof applySetpointConstraints>;
 
@@ -2063,16 +2073,33 @@ export class Optimizer {
           inputs.priceStats.priceLevel
         );
         const maintainSource = Number.isFinite(predictedTarget) ? 'service_prediction' : 'price_fallback';
-        tankTarget = Number.isFinite(predictedTarget) ? Number(predictedTarget) : fallbackTankTarget();
+        const resolvedTarget = Number.isFinite(predictedTarget) ? Number(predictedTarget) : fallbackTankTarget();
+
+        // Hysteresis. Both the service prediction and the price fallback are memoryless — they
+        // map the current price level onto a fixed band fraction — so without a dead zone every
+        // price-level boundary crossing produces a new target and an hourly setpoint write, for
+        // no economic gain. "Maintain" means no strong signal; only move if the adaptive target
+        // has drifted meaningfully away from where the tank already is.
+        const maintainHysteresisC = MAINTAIN_TANK_HYSTERESIS_C;
+        const drift = Math.abs(resolvedTarget - currentTankTarget);
+        const moveAwayFromCurrent = drift >= maintainHysteresisC;
+        tankTarget = moveAwayFromCurrent ? resolvedTarget : currentTankTarget;
+
         this.logger.log('Tank maintain target decision', {
           currentTankTarget,
           predictedTarget: Number.isFinite(predictedTarget) ? Number(predictedTarget) : null,
           maintainSource,
-          resolvedTarget: tankTarget,
+          resolvedTarget,
+          drift: Number(drift.toFixed(2)),
+          hysteresisC: maintainHysteresisC,
+          applied: moveAwayFromCurrent,
+          tankTarget,
           priceLevel: inputs.priceStats.priceLevel,
           currentPrice: inputs.priceStats.currentPrice
         });
-        tankReason = `Maintaining adaptive tank target (${hwAction.reason ?? 'no immediate price or usage signal'})`;
+        tankReason = moveAwayFromCurrent
+          ? `Maintaining adaptive tank target (${hwAction.reason ?? 'no immediate price or usage signal'})`
+          : `Holding tank setpoint (adaptive target ${resolvedTarget}°C within ${maintainHysteresisC}°C hysteresis)`;
       } else {
         // No hotWaterAction available: fall back to direct price-level heuristic
         tankTarget = fallbackTankTarget();
@@ -2115,7 +2142,14 @@ export class Optimizer {
         deadbandC: tankDeadband,
         minChangeMinutes: this.minSetpointChangeMinutes,
         lastChangeMs: this.getTankState().timestamp,
-        maxDeltaPerChangeC: this.getTankConstraints().tempStep // Enforce max step size for Tank
+        // Ramp cap, deliberately decoupled from the rounding step. Frequency is governed
+        // separately by minChangeMinutes, so a larger cap does not mean more writes — it means
+        // fewer, because the target is reached in one or two runs and subsequent runs are then
+        // suppressed by the deadband instead of stepping 1 °C at a time for hours.
+        maxDeltaPerChangeC: Math.max(
+          this.getTankConstraints().tempStep,
+          COMFORT_CONSTANTS.DEFAULT_TANK_MAX_DELTA_PER_CHANGE
+        )
       });
       logger('constraints.tank.final', {
         proposed: tankTarget,

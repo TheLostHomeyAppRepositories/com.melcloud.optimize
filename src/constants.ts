@@ -23,6 +23,19 @@ export const COMFORT_CONSTANTS = {
     DEFAULT_TEMP_STEP: 0.5,
     DEFAULT_TEMP_STEP_ZONE2: 1.0,
     DEFAULT_TANK_TEMP_STEP: 1.0,
+    /**
+     * Maximum tank setpoint movement per optimization run, in °C.
+     *
+     * Deliberately larger than DEFAULT_TANK_TEMP_STEP (the rounding grid): the tank is a
+     * buffer, not a comfort variable, and capping it at one grid step meant a full-range move
+     * took ~20 hourly writes — longer than any cheap window, so the arbitrage never completed
+     * while still writing a setpoint every hour.
+     *
+     * Not unbounded, though: large single jumps can bring a tank's resistance element in,
+     * which burns direct electricity and defeats the saving. 4 °C reaches a useful target in
+     * one or two runs while staying a modest step for the compressor.
+     */
+    DEFAULT_TANK_MAX_DELTA_PER_CHANGE: 4.0,
     DEFAULT_DEADBAND: 0.5,
     DEFAULT_MIN_SETPOINT_CHANGE_MINUTES: 30,
 };

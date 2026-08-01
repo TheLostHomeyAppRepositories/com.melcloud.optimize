@@ -271,5 +271,8 @@
   },
   "14.0.57": {
     "en": "Adds a recovery action that resets learned price weights, strategy parameters and the thermal model to defaults."
+  },
+  "14.0.58": {
+    "en": "Hot water: the tank can now reach its target in one or two steps instead of stepping 1C per hour, and holds steady when there is no strong price signal."
   }
 }

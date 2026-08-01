@@ -218,6 +218,69 @@ describe('maxDeltaPerChangeC ramp limiting', () => {
     expect(result.constrainedC).toBeGreaterThan(20);
   });
 
+  // The tank ramp cap governs how far one write may move the setpoint; minChangeMinutes governs
+  // how often a write may happen. They are independent, so raising the cap must not increase the
+  // number of writes — it should reduce it, by reaching the target sooner and then being
+  // suppressed by the deadband.
+  describe('tank ramp cap: write count for a full-range move', () => {
+    function simulateHourlyRun(maxDeltaPerChangeC: number): { writes: number; finalC: number } {
+      const minTemp = 40;
+      const maxTemp = 60;
+      let current = minTemp;
+      let writes = 0;
+
+      for (let hour = 0; hour < 24; hour++) {
+        const result = applySetpointConstraints({
+          proposedC: maxTemp,
+          currentTargetC: current,
+          minC: minTemp,
+          maxC: maxTemp,
+          stepC: 1.0,
+          deadbandC: 1.0,
+          minChangeMinutes: 60,
+          lastChangeMs: null,
+          maxDeltaPerChangeC
+        });
+        if (result.changed) {
+          writes++;
+          current = result.constrainedC;
+        }
+      }
+
+      return { writes, finalC: current };
+    }
+
+    test('a 1C cap needs 20 hourly writes and misses any realistic cheap window', () => {
+      const { writes, finalC } = simulateHourlyRun(1.0);
+
+      expect(writes).toBe(20);
+      expect(finalC).toBe(60);
+    });
+
+    test('a 4C cap reaches the target in 5 writes, then stops writing', () => {
+      const { writes, finalC } = simulateHourlyRun(4.0);
+
+      expect(writes).toBe(5);
+      expect(finalC).toBe(60);
+    });
+
+    test('once at target, further runs produce no write', () => {
+      const result = applySetpointConstraints({
+        proposedC: 60,
+        currentTargetC: 60,
+        minC: 40,
+        maxC: 60,
+        stepC: 1.0,
+        deadbandC: 1.0,
+        minChangeMinutes: 60,
+        lastChangeMs: null,
+        maxDeltaPerChangeC: 4.0
+      });
+
+      expect(result.changed).toBe(false);
+    });
+  });
+
   test('still blocks changes genuinely below the deadband', () => {
     const result = applySetpointConstraints({
       ...rampInput,

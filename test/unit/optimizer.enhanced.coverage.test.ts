@@ -297,8 +297,56 @@ describe('Optimizer hotwater & enhanced edge cases', () => {
     );
 
     expect(homey.hotWaterService.getOptimalTankTemperature).toHaveBeenCalledWith(42, 53, 1.12, 'NORMAL');
-    expect(result.toTemp).toBe(50);
+    // 52 -> 48 in one move. The adaptive target has drifted 4°C from the current setpoint, which
+    // clears the maintain hysteresis, and the tank ramp cap (4°C) is wide enough to arrive in a
+    // single write rather than stepping there over several hours.
+    expect(result.toTemp).toBe(48);
     expect(result.needsApply).toBe(true);
+  });
+
+  test('optimizeTank holds the current setpoint when the maintain target is within hysteresis', async () => {
+    const homey: any = {
+      settings: {
+        get: jest.fn(),
+        set: jest.fn()
+      },
+      hotWaterService: {
+        getUsageStatistics: jest.fn().mockReturnValue({
+          statistics: {
+            usageByHourOfDay: new Array(24).fill(0.5),
+            dataPointCount: 24
+          }
+        }),
+        // Only 1°C away from the current 52°C setpoint — no strong signal.
+        getOptimalTankTemperature: jest.fn().mockReturnValue(51)
+      }
+    };
+    optimizer = new Optimizer(mockMel, mockTibber, 'device-1', 1, logger as any, undefined, homey);
+    optimizer.setTankTemperatureConstraints(true, 42, 53, 2);
+
+    const result = await (optimizer as any).optimizeTank(
+      {
+        deviceState: { SetTankWaterTemperature: 52 },
+        priceStats: {
+          currentPrice: 1.12,
+          priceLevel: 'NORMAL',
+          pricePercentile: 84.6
+        },
+        priceClassification: { thresholds: {} }
+      },
+      {
+        hotWaterAction: {
+          action: 'maintain',
+          reason: 'Predictive scheduling found no immediate action'
+        }
+      },
+      jest.fn()
+    );
+
+    // 'maintain' means no strong signal. Chasing a 1°C drift would write a new setpoint every
+    // hour as the price level wanders across band-fraction boundaries, for no economic gain.
+    expect(result.toTemp).toBe(52);
+    expect(result.needsApply).toBe(false);
   });
 
   test('runOptimization prefers MELCloud daily hot water total over learner daily history', async () => {
