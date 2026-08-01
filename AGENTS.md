@@ -9,33 +9,6 @@
 
 This is a **Homey app** that optimizes Mitsubishi Electric heat pump operation based on electricity prices, weather, and learned thermal characteristics. The goal is to maintain comfort while minimizing energy costs.
 
-**Key Technologies:**
-- TypeScript, Homey SDK 3.0
-- MELCloud API (device control)
-- Tibber/ENTSO-E APIs (electricity prices)
-- Node.js runtime on Homey hub
-
----
-
-## Architecture Summary
-
-```
-Optimizer (orchestrator, ~2,350 lines)
-    ├── TemperatureOptimizer (core temp calculations)
-    ├── SavingsService (savings calculations)
-    ├── CalibrationService (weekly calibration)
-    ├── ZoneOptimizer (Zone 2 coordination)
-    ├── HotWaterOptimizer (tank scheduling)
-    ├── ThermalController (thermal mass strategy)
-    ├── PriceAnalyzer (price classification)
-    ├── CopNormalizer (COP with outlier guards)
-    └── ConstraintManager (safety limits)
-```
-
-**External APIs:**
-- `MelCloudApi` → MELCloud device state/control
-- `TibberApi` / `EntsoePriceService` → electricity prices
-
 ---
 
 ## Critical Rules
@@ -109,20 +82,7 @@ Full reference: [`documentation/SETTINGS_REFERENCE.md`](file:///Users/kjetilvetl
 
 ---
 
-## Optimization Flow
-
-```
-1. Collect inputs (device state, prices, weather)
-2. Classify price (VERY_CHEAP → VERY_EXPENSIVE)
-3. Calculate planning bias (trajectory-aware - see below)
-4. Calculate thermal strategy (preheat/coast/maintain/boost)
-5. Compute optimal temperature within comfort band
-6. Apply constraints (deadband, step limit, anti-cycling)
-7. Send setpoint via MELCloud API
-7. Record savings and learn from outcome
-```
-
-### Trajectory-Aware Planning Bias
+## Trajectory-Aware Planning Bias
 
 The planning bias (`computePlanningBias` in `src/services/planning-utils.ts`) is **trajectory-aware**:
 
@@ -133,74 +93,6 @@ The planning bias (`computePlanningBias` in `src/services/planning-utils.ts`) is
 - **No bias (0):** When prices are declining toward cheap → wait rather than reduce temperature prematurely
 
 This prevents the optimizer from lowering temperature during NORMAL price periods when cheap prices are coming soon. Instead, it waits for the cheap period to heat efficiently.
-
----
-
-## File Locations
-
-| Component | File |
-|-----------|------|
-| Main orchestrator | `src/services/optimizer.ts` |
-| Temperature logic | `src/services/temperature-optimizer.ts` |
-| Savings calculations | `src/services/savings-service.ts` |
-| Thermal strategies | `src/services/thermal-controller.ts` |
-| Planning utilities | `src/services/planning-utils.ts` |
-| Constraints | `src/services/constraint-manager.ts` |
-| Settings | `src/services/settings-loader.ts` |
-| Types | `src/types/index.ts` |
-| API endpoints | `api.ts` |
-| Main app | `src/app.ts` |
-
----
-
-## Common Patterns
-
-### Reading Settings
-```typescript
-const settingsLoader = new SettingsLoader(homey, logger);
-const settings = settingsLoader.loadAllSettings();
-// settings.cop, settings.constraints, settings.price, etc.
-```
-
-### Applying Constraints
-```typescript
-import { applySetpointConstraints } from './constraint-manager';
-
-// All values come from settings - never hardcode!
-const constraints = settingsLoader.loadConstraintSettings();
-
-const result = applySetpointConstraints({
-  proposedC: newTarget,
-  currentTargetC: currentTarget,
-  minC: comfortBand.min,
-  maxC: comfortBand.max,
-  stepC: constraints.tempStepMax,
-  deadbandC: constraints.deadband,
-  minChangeMinutes: constraints.minSetpointChangeMinutes,
-  lastChangeMs: lastChangeTime
-});
-
-if (result.allowed) {
-  // Apply result.clampedC
-}
-```
-
-### Price Classification
-```typescript
-const level = priceAnalyzer.getPriceLevel(percentile);
-// Returns: VERY_CHEAP, CHEAP, MODERATE, EXPENSIVE, VERY_EXPENSIVE
-```
-
----
-
-## Testing
-
-```bash
-npm run test:unit    # Unit tests
-npm run build        # TypeScript compilation
-npm run lint         # ESLint
-homey app run        # Deploy to Homey
-```
 
 ---
 
@@ -232,17 +124,5 @@ homey app run        # Deploy to Homey
 
 ## Do
 
-1. ✅ Use services for their designated purposes
-2. ✅ Persist learning state to settings
-3. ✅ Log all optimization decisions with reasoning
-4. ✅ Run tests after changes: `npm run test:unit`
-5. ✅ Follow existing patterns for new features
-6. ✅ Update documentation when changing behavior
-
-## Recent Changes
-- 001-quarter-hour-pricing: Added TypeScript 5.8+, Node.js ≥16, Homey SDK 3.0 + Homey CLI, luxon/moment-timezone, node-fetch, fast-xml-parser, jest/ts-jes
-- 001-quarter-hour-pricing: Added [if applicable, e.g., PostgreSQL, CoreData, files or N/A]
-
-## Active Technologies
-- TypeScript 5.8+, Node.js ≥16, Homey SDK 3.0 + Homey CLI, luxon/moment-timezone, node-fetch, fast-xml-parser, jest/ts-jes (001-quarter-hour-pricing)
-- Homey settings (price caches, learning state); no new storage expected (001-quarter-hour-pricing)
+1. ✅ Persist learning state to settings
+2. ✅ Log all optimization decisions with reasoning

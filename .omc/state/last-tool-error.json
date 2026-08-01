@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"echo \\\"=== ~/.claude/hooks ===\\\"; ls -1 ~/.claude/hooks 2>/dev/null; echo \\\"=== ~/.claude/commands ===\\\"; ls -1 ~/.claude/commands 2>/dev/null || echo none; echo \\\"=== ~/.claude dir ===\\\";...",
+  "error": "Exit code 5\n=== ~/.claude/hooks ===\ncode-simplifier.mjs\nfind-node.sh\nkeyword-detector.mjs\nlib\npersistent-mode.mjs\npost-tool-use-failure.mjs\npost-tool-use.mjs\npre-tool-use.mjs\nsession-start.mjs\n=== ~/.claude/commands ===\nnone\n=== ~/.claude dir ===\nCLAUDE.md\nCLAUDE.md.backup.2026-04-06_095648\nCLAUDE.md.backup.2026-04-08T21-14-02\nCLAUDE.md.backup.2026-04-08_231417\nCLAUDE.md.backup.2026-04-09_174350\nCLAUDE.md.backup.2026-04-09_174839\nCLAUDE.md.backup.2026-04-11T05-39-30\nbackups\ncache\nchrome\ndebug\ndo...",
+  "timestamp": "2026-08-01T05:41:05.953Z",
+  "retry_count": 1
+}

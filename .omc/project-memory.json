@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1780603029817,
+  "lastScanned": 1780837395599,
   "projectRoot": "/Users/kjetilvetlejord/Documents/mel/com.melcloud.optimize",
   "techStack": {
     "languages": [
@@ -85,7 +85,7 @@
       "path": "assets",
       "purpose": "Static assets",
       "fileCount": 3,
-      "lastAccessed": 1780603029789,
+      "lastAccessed": 1780837395448,
       "keyFiles": [
         "entsoe_area_map.json",
         "icon.svg"
@@ -95,7 +95,7 @@
       "path": "capabilities",
       "purpose": null,
       "fileCount": 5,
-      "lastAccessed": 1780603029795,
+      "lastAccessed": 1780837395450,
       "keyFiles": [
         "heating_cop.json",
         "holiday_mode.json",
@@ -108,7 +108,7 @@
       "path": "coverage",
       "purpose": null,
       "fileCount": 10,
-      "lastAccessed": 1780603029796,
+      "lastAccessed": 1780837395563,
       "keyFiles": [
         "base.css",
         "block-navigation.js",
@@ -121,7 +121,7 @@
       "path": "coverage-unit",
       "purpose": null,
       "fileCount": 9,
-      "lastAccessed": 1780603029796,
+      "lastAccessed": 1780837395565,
       "keyFiles": [
         "base.css",
         "block-navigation.js",
@@ -134,7 +134,7 @@
       "path": "dashboard-output",
       "purpose": null,
       "fileCount": 2,
-      "lastAccessed": 1780603029797,
+      "lastAccessed": 1780837395566,
       "keyFiles": [
         "enhanced-dashboard.html",
         "melcloud-historical-data.json"
@@ -144,7 +144,7 @@
       "path": "data",
       "purpose": "Data files",
       "fileCount": 4,
-      "lastAccessed": 1780603029798,
+      "lastAccessed": 1780837395567,
       "keyFiles": [
         "config.yaml",
         "cop_curve.csv",
@@ -156,14 +156,14 @@
       "path": "docs",
       "purpose": "Documentation",
       "fileCount": 0,
-      "lastAccessed": 1780603029798,
+      "lastAccessed": 1780837395573,
       "keyFiles": []
     },
     "documentation": {
       "path": "documentation",
       "purpose": null,
       "fileCount": 10,
-      "lastAccessed": 1780603029798,
+      "lastAccessed": 1780837395576,
       "keyFiles": [
         "ALGORITHM_REFERENCE.md",
         "ARCHITECTURE.md",
@@ -176,14 +176,14 @@
       "path": "drivers",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1780603029798,
+      "lastAccessed": 1780837395590,
       "keyFiles": []
     },
     "locales": {
       "path": "locales",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1780603029799,
+      "lastAccessed": 1780837395590,
       "keyFiles": [
         "en.json"
       ]
@@ -192,7 +192,7 @@
       "path": "openspec",
       "purpose": null,
       "fileCount": 2,
-      "lastAccessed": 1780603029799,
+      "lastAccessed": 1780837395591,
       "keyFiles": [
         "AGENTS.md",
         "project.md"
@@ -202,7 +202,7 @@
       "path": "results",
       "purpose": null,
       "fileCount": 5,
-      "lastAccessed": 1780603029800,
+      "lastAccessed": 1780837395592,
       "keyFiles": [
         "baseline_decisions.csv",
         "cold_front_cheap_night.csv",
@@ -215,7 +215,7 @@
       "path": "review",
       "purpose": null,
       "fileCount": 3,
-      "lastAccessed": 1780603029800,
+      "lastAccessed": 1780837395592,
       "keyFiles": [
         "CODE_REVIEW_2025-11-28.md",
         "heat_pump_algorithm_review_corrected.md",
@@ -226,7 +226,7 @@
       "path": "scripts",
       "purpose": "Build/utility scripts",
       "fileCount": 2,
-      "lastAccessed": 1780603029800,
+      "lastAccessed": 1780837395592,
       "keyFiles": [
         "generate_entsoe_area_map.py",
         "simulate.ts"
@@ -236,7 +236,7 @@
       "path": "settings",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1780603029800,
+      "lastAccessed": 1780837395593,
       "keyFiles": [
         "index.html"
       ]
@@ -245,14 +245,14 @@
       "path": "specs",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1780603029801,
+      "lastAccessed": 1780837395593,
       "keyFiles": []
     },
     "src": {
       "path": "src",
       "purpose": "Source code",
       "fileCount": 6,
-      "lastAccessed": 1780603029801,
+      "lastAccessed": 1780837395596,
       "keyFiles": [
         "api.ts",
         "app.ts",
@@ -265,7 +265,7 @@
       "path": "test",
       "purpose": "Test files",
       "fileCount": 10,
-      "lastAccessed": 1780603029801,
+      "lastAccessed": 1780837395596,
       "keyFiles": [
         "README.md",
         "config.example.json",
@@ -278,7 +278,7 @@
       "path": "types",
       "purpose": "Type definitions",
       "fileCount": 1,
-      "lastAccessed": 1780603029801,
+      "lastAccessed": 1780837395596,
       "keyFiles": [
         "homey.d.ts"
       ]
@@ -287,14 +287,14 @@
       "path": "widgets",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1780603029802,
+      "lastAccessed": 1780837395597,
       "keyFiles": []
     },
     "src/config": {
       "path": "src/config",
       "purpose": "Configuration files",
       "fileCount": 1,
-      "lastAccessed": 1780603029804,
+      "lastAccessed": 1780837395598,
       "keyFiles": [
         "comfort-defaults.ts"
       ]
@@ -303,7 +303,7 @@
       "path": "src/services",
       "purpose": "Business logic services",
       "fileCount": 27,
-      "lastAccessed": 1780603029804,
+      "lastAccessed": 1780837395599,
       "keyFiles": [
         "accounting-service.ts",
         "adaptive-parameters.ts",
@@ -314,7 +314,7 @@
       "path": "src/types",
       "purpose": "Type definitions",
       "fileCount": 3,
-      "lastAccessed": 1780603029805,
+      "lastAccessed": 1780837395599,
       "keyFiles": [
         "enhanced-cop-data.ts",
         "homey-extensions.ts",
@@ -325,7 +325,7 @@
       "path": "test/fixtures",
       "purpose": "Test fixtures",
       "fileCount": 1,
-      "lastAccessed": 1780603029805,
+      "lastAccessed": 1780837395599,
       "keyFiles": [
         "generate-scenarios.ts"
       ]
@@ -334,7 +334,7 @@
       "path": "test/mocks",
       "purpose": "Mock data",
       "fileCount": 4,
-      "lastAccessed": 1780603029805,
+      "lastAccessed": 1780837395599,
       "keyFiles": [
         "homey.mock.ts",
         "index.ts",
