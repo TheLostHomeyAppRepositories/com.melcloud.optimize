@@ -416,3 +416,82 @@ describe('Optimizer hotwater & enhanced edge cases', () => {
     expect(optimizer.forceThermalDataCleanup()).toEqual({ success: false, message: 'Thermal model service not initialized' });
   });
 });
+
+describe('Tank reheat commitment', () => {
+  const logger = createMockLogger();
+
+  function makeHomey(storedReheatMs: number | null) {
+    const store: Record<string, any> = { dhw_scheduled_reheat_ms: storedReheatMs };
+    return {
+      settings: {
+        get: jest.fn((key: string) => store[key]),
+        set: jest.fn((key: string, value: any) => { store[key] = value; })
+      },
+      __store: store
+    } as any;
+  }
+
+  function makeInputs() {
+    return {
+      deviceState: { SetTankWaterTemperature: 45 },
+      priceStats: { currentPrice: 0.9, priceLevel: 'EXPENSIVE', pricePercentile: 90 },
+      priceClassification: { thresholds: {} }
+    };
+  }
+
+  test('a delay with a scheduled time persists a reheat commitment', async () => {
+    const homey = makeHomey(null);
+    const opt: any = new Optimizer(mockMel, mockTibber, 'device-1', 1, logger as any, undefined, homey);
+    opt.setTankTemperatureConstraints(true, 40, 55, 1);
+
+    const scheduledTime = new Date(Date.now() + 3 * 3600000).toISOString();
+    await opt.optimizeTank(makeInputs(), {
+      hotWaterAction: { action: 'delay', reason: 'price high', scheduledTime }
+    }, jest.fn());
+
+    expect(homey.__store.dhw_scheduled_reheat_ms).toBe(Date.parse(scheduledTime));
+  });
+
+  test('a due commitment forces heat_now even while the price still reads expensive', async () => {
+    // Committed 10 minutes ago: within the grace window, so it should fire now.
+    const homey = makeHomey(Date.now() - 10 * 60000);
+    const opt: any = new Optimizer(mockMel, mockTibber, 'device-1', 1, logger as any, undefined, homey);
+    opt.setTankTemperatureConstraints(true, 40, 55, 1);
+
+    const result = await opt.optimizeTank(makeInputs(), {
+      hotWaterAction: { action: 'delay', reason: 'price high' }
+    }, jest.fn());
+
+    expect(result.toTemp).toBeGreaterThan(45);
+    expect(result.reason).toContain('scheduled reheat');
+    // Consumed, so it cannot fire twice.
+    expect(homey.__store.dhw_scheduled_reheat_ms).toBeNull();
+  });
+
+  test('a stale commitment is discarded rather than acted on late', async () => {
+    // 4 hours late - well past the 90 minute grace window.
+    const homey = makeHomey(Date.now() - 4 * 3600000);
+    const opt: any = new Optimizer(mockMel, mockTibber, 'device-1', 1, logger as any, undefined, homey);
+    opt.setTankTemperatureConstraints(true, 40, 55, 1);
+
+    const result = await opt.optimizeTank(makeInputs(), {
+      hotWaterAction: { action: 'delay', reason: 'price high' }
+    }, jest.fn());
+
+    expect(result.reason).not.toContain('scheduled reheat');
+    expect(homey.__store.dhw_scheduled_reheat_ms).toBeNull();
+  });
+
+  test('a future commitment does not fire early', async () => {
+    const homey = makeHomey(Date.now() + 2 * 3600000);
+    const opt: any = new Optimizer(mockMel, mockTibber, 'device-1', 1, logger as any, undefined, homey);
+    opt.setTankTemperatureConstraints(true, 40, 55, 1);
+
+    const result = await opt.optimizeTank(makeInputs(), {
+      hotWaterAction: { action: 'delay', reason: 'price high' }
+    }, jest.fn());
+
+    expect(result.reason).not.toContain('scheduled reheat');
+    expect(typeof homey.__store.dhw_scheduled_reheat_ms).toBe('number');
+  });
+});

@@ -3,6 +3,7 @@ import { PriceAnalyzer } from './price-analyzer';
 import { OptimizationMetrics, SchedulePoint } from '../types';
 import { COP_THRESHOLDS } from '../constants';
 import { CopNormalizer } from './cop-normalizer';
+import { analysePriceSpread } from '../util/price-spread';
 
 export interface HotWaterAction {
     action: 'heat_now' | 'delay' | 'maintain';
@@ -449,6 +450,8 @@ export class HotWaterOptimizer {
         currentAction: 'heat_now' | 'delay' | 'maintain';
         reasoning: string;
         estimatedSavings: number;
+        /** When a 'delay' expects to reheat. Consumed by the tank controller as a commitment. */
+        scheduledTime?: string;
     } {
         try {
             if (!Array.isArray(priceData) || priceData.length === 0) {
@@ -493,9 +496,31 @@ export class HotWaterOptimizer {
                     estimatedSavings: 0
                 };
             }
+            // Spread gate. Rank-based scheduling always finds a cheapest hour, even on a day
+            // where every hour costs the same, so without this the tank cycles for a fraction
+            // of an öre. Tested on the delivered price, since the fixed per-kWh adders are
+            // identical in every hour and compress the ratio well below what spot suggests.
+            const spread = analysePriceSpread(next24h, { fixedAdderPerKwh: options.gridFeePerKwh });
+            if (!spread.worthRetiming) {
+                this.logger.log('DHW scheduling held: price spread too small to be worth cycling', {
+                    minPrice: spread.minPrice,
+                    maxPrice: spread.maxPrice,
+                    absoluteSpread: Number(spread.absoluteSpread.toFixed(4)),
+                    deliveredRatio: Number(spread.deliveredRatio.toFixed(3))
+                });
+                return {
+                    schedulePoints: [],
+                    currentAction: 'maintain',
+                    reasoning: `Price spread ${spread.absoluteSpread.toFixed(3)}/kWh too small to be worth heating cycles`,
+                    estimatedSavings: 0
+                };
+            }
+
             this.logger.log('DHW pattern scheduler inputs', {
                 currentHour,
                 peakHours: usagePattern.peakHours,
+                absoluteSpread: Number(spread.absoluteSpread.toFixed(4)),
+                deliveredRatio: Number(spread.deliveredRatio.toFixed(3)),
                 next24hCount: next24h.length,
                 quarterHourlyCount: Array.isArray(options.quarterHourly) ? options.quarterHourly.length : 0,
                 estimatedDailyHotWaterKwh: options.estimatedDailyHotWaterKwh ?? null
@@ -607,6 +632,7 @@ export class HotWaterOptimizer {
             // "Predictive scheduling…" template was returned for every branch, so a price-driven
             // delay was mislabeled as predictive scheduling.
             let actionReason = 'Holding tank setpoint (no immediate action)';
+            let scheduledTime: string | undefined;
             const peaksStr = usagePattern.peakHours.join(', ');
 
             // Check if current hour is a scheduled heating time
@@ -641,9 +667,19 @@ export class HotWaterOptimizer {
                         currentAction = 'heat_now';
                         actionReason = `Heating now: price low (${priceRatio.toFixed(2)}× avg) and COP favourable`;
                     } else if (currentPrice > avgPrice * (1 + this.priceAnalyzer.getCheapPercentile() * 1.2)) {
-                        // Expensive hour: reduce tank to save energy, heat later at cheaper price
+                        // Expensive hour: reduce tank to save energy, heat later at cheaper price.
+                        // Naming the hour matters — without it "delay" degrades to "drop the tank
+                        // now" with nothing to bring it back up, and the reheat only happens when
+                        // some later run independently rediscovers a cheap price.
                         currentAction = 'delay';
-                        actionReason = `Conserving tank: price high (${priceRatio.toFixed(2)}× avg), reheat later at cheaper price`;
+                        const cheapestUpcoming = next24h.reduce(
+                            (best: any, p: any) => (Number.isFinite(p.price) && p.price < best.price ? p : best),
+                            next24h[0]
+                        );
+                        scheduledTime = typeof cheapestUpcoming?.time === 'string' ? cheapestUpcoming.time : undefined;
+                        actionReason = scheduledTime
+                            ? `Conserving tank: price high (${priceRatio.toFixed(2)}× avg), reheat scheduled at ${scheduledTime}`
+                            : `Conserving tank: price high (${priceRatio.toFixed(2)}× avg), reheat later at cheaper price`;
                     } else {
                         actionReason = `Holding tank setpoint (price ${priceRatio.toFixed(2)}× avg, near normal)`;
                     }
@@ -677,7 +713,8 @@ export class HotWaterOptimizer {
                 reasoning: currentAction === 'maintain'
                     ? actionReason
                     : `${actionReason} (peaks: ${peaksStr}h, saves ${estimatedSavings.toFixed(2)} ${currencyCode})`,
-                estimatedSavings
+                estimatedSavings,
+                scheduledTime
             };
 
         } catch (error) {

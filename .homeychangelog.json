@@ -274,5 +274,8 @@
   },
   "14.0.58": {
     "en": "Hot water: the tank can now reach its target in one or two steps instead of stepping 1C per hour, and holds steady when there is no strong price signal."
+  },
+  "14.0.59": {
+    "en": "Hot water now commits to reheating at the cheap hour it picked, and stays put when the day is too flat for shifting to pay."
   }
 }

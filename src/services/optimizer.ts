@@ -59,6 +59,16 @@ const MIN_SAVINGS_FOR_LEARNING = 0.05; // Minimum savings (SEK-equivalent) to tr
  */
 const MAINTAIN_TANK_HYSTERESIS_C = 2.0;
 
+/** Settings key holding the epoch ms of a committed tank reheat, if one is pending. */
+const SCHEDULED_TANK_REHEAT_SETTING = 'dhw_scheduled_reheat_ms';
+
+/**
+ * How late a scheduled reheat may be honoured. The optimizer runs hourly, so a commitment
+ * should be picked up on the next run; anything older is stale and reheating then would land in
+ * an hour that was never chosen for its price.
+ */
+const SCHEDULED_TANK_REHEAT_GRACE_MINUTES = 90;
+
 type DecisionLogger = (event: string, payload: Record<string, unknown>) => void;
 type ConstraintResult = ReturnType<typeof applySetpointConstraints>;
 
@@ -1694,7 +1704,7 @@ export class Optimizer {
           hotWaterAction = {
             action: hotWaterSchedule.currentAction,
             reason: hotWaterSchedule.reasoning,
-            scheduledTime: undefined
+            scheduledTime: hotWaterSchedule.scheduledTime
           };
 
           this.logger.log('Pattern-based hot water optimization:', {
@@ -2031,6 +2041,83 @@ export class Optimizer {
     }
   }
 
+  /**
+   * Record that the tank should be reheated at a chosen future time.
+   *
+   * Persisted rather than held in memory so the commitment survives a restart — otherwise a
+   * lowered tank could be left with nothing scheduled to bring it back up.
+   */
+  private recordScheduledTankReheat(scheduledTimeIso: string): void {
+    const scheduledMs = Date.parse(scheduledTimeIso);
+    if (!Number.isFinite(scheduledMs) || !this.homey) {
+      return;
+    }
+
+    try {
+      this.homey.settings.set(SCHEDULED_TANK_REHEAT_SETTING, scheduledMs);
+      this.logger.log(`Tank reheat scheduled for ${scheduledTimeIso}`);
+    } catch (error) {
+      this.logger.error('Failed to persist scheduled tank reheat', error as Error);
+    }
+  }
+
+  /**
+   * Check whether a scheduled reheat has come due, clearing it once consumed or stale.
+   *
+   * The optimizer runs hourly, so a commitment is honoured within the window that follows its
+   * start time. Anything older than that is discarded rather than acted on late — reheating at
+   * an arbitrary later hour would defeat the point of having chosen a cheap one.
+   */
+  private consumeScheduledTankReheat(nowMs: number): {
+    due: boolean;
+    scheduledForIso?: string;
+    minutesLate?: number;
+  } {
+    if (!this.homey) {
+      return { due: false };
+    }
+
+    let scheduledMs: unknown;
+    try {
+      scheduledMs = this.homey.settings.get(SCHEDULED_TANK_REHEAT_SETTING);
+    } catch {
+      return { due: false };
+    }
+
+    if (typeof scheduledMs !== 'number' || !Number.isFinite(scheduledMs)) {
+      return { due: false };
+    }
+
+    const clear = (): void => {
+      try {
+        this.homey?.settings.set(SCHEDULED_TANK_REHEAT_SETTING, null);
+      } catch {
+        // Best effort: a stale commitment expires on age anyway.
+      }
+    };
+
+    if (nowMs < scheduledMs) {
+      return { due: false };
+    }
+
+    const minutesLate = (nowMs - scheduledMs) / 60000;
+    clear();
+
+    if (minutesLate > SCHEDULED_TANK_REHEAT_GRACE_MINUTES) {
+      this.logger.log(
+        `Discarding stale tank reheat commitment (${minutesLate.toFixed(0)}m late, ` +
+        `grace ${SCHEDULED_TANK_REHEAT_GRACE_MINUTES}m)`
+      );
+      return { due: false };
+    }
+
+    return {
+      due: true,
+      scheduledForIso: new Date(scheduledMs).toISOString(),
+      minutesLate: Number(minutesLate.toFixed(1))
+    };
+  }
+
   private async optimizeTank(inputs: OptimizationInputs, zone1Result: Zone1OptimizationResult, logger: DecisionLogger): Promise<TankOptimizationPlan | null> {
     const currentTankTarget = inputs.deviceState.SetTankWaterTemperature;
     if (!this.getTankConstraints().enabled || currentTankTarget === undefined) {
@@ -2040,9 +2127,27 @@ export class Optimizer {
     try {
       let tankTarget = currentTankTarget;
       let tankReason = 'Maintaining current tank temperature';
+      let hwActionOverride: string | undefined;
 
-      const hwAction: { action?: string; reason?: string } | null = zone1Result.hotWaterAction ?? null;
+      const hwAction: { action?: string; reason?: string; scheduledTime?: string } | null =
+        zone1Result.hotWaterAction ?? null;
       const tankCons = this.getTankConstraints();
+
+      // Honour a previously scheduled reheat. Without this, 'delay' only ever lowered the tank
+      // and nothing remembered to bring it back up — the reheat happened by accident, whenever a
+      // later run independently rediscovered a cheap price. Committing to the chosen hour is what
+      // makes "wait for the cheap window" an actual plan rather than a description.
+      const nowMs = Date.now();
+      const scheduledReheat = this.consumeScheduledTankReheat(nowMs);
+      if (scheduledReheat.due) {
+        hwActionOverride = 'heat_now';
+        this.logger.log('Tank reheat commitment is due', {
+          scheduledFor: scheduledReheat.scheduledForIso,
+          minutesLate: scheduledReheat.minutesLate
+        });
+      } else if (hwAction?.action === 'delay' && hwAction.scheduledTime) {
+        this.recordScheduledTankReheat(hwAction.scheduledTime);
+      }
       const hotWaterService = this.getHotWaterService();
       const fallbackTankTarget = (): number => {
         if (inputs.priceStats.priceLevel === 'VERY_CHEAP' || inputs.priceStats.priceLevel === 'CHEAP') {
@@ -2054,15 +2159,23 @@ export class Optimizer {
         return Math.round((tankCons.minTemp + tankCons.maxTemp) / 2);
       };
 
-      if (hwAction?.action === 'heat_now') {
-        // Cheap price window or upcoming usage peak: pre-heat to max
+      // A due reheat commitment outranks the instantaneous price classification: the decision to
+      // wait for this hour was already made when the tank was lowered.
+      const effectiveAction = hwActionOverride ?? hwAction?.action;
+
+      if (effectiveAction === 'heat_now') {
+        // Cheap price window, upcoming usage peak, or a scheduled reheat coming due
         tankTarget = tankCons.maxTemp;
-        tankReason = `Pre-heating tank: ${hwAction.reason ?? 'cheap window or upcoming usage'}`;
-      } else if (hwAction?.action === 'delay') {
+        tankReason = hwActionOverride
+          ? `Pre-heating tank: scheduled reheat window reached`
+          : `Pre-heating tank: ${hwAction?.reason ?? 'cheap window or upcoming usage'}`;
+      } else if (effectiveAction === 'delay') {
         // Expensive price window: reduce to minimum to save energy
         tankTarget = tankCons.minTemp;
-        tankReason = `Conserving tank energy: ${hwAction.reason ?? 'waiting for cheaper window'}`;
-      } else if (hwAction?.action === 'maintain') {
+        tankReason = hwAction?.scheduledTime
+          ? `Conserving tank energy until ${hwAction.scheduledTime}: ${hwAction.reason ?? 'waiting for cheaper window'}`
+          : `Conserving tank energy: ${hwAction?.reason ?? 'waiting for cheaper window'}`;
+      } else if (effectiveAction === 'maintain') {
         // "Maintain" should preserve a steady strategy, not pin the tank to whatever setpoint happened
         // to be active previously. Prefer the hot-water service's adaptive target, then fall back to
         // price-aware midpoint logic so the controller can move away from stale high targets.
@@ -2098,7 +2211,7 @@ export class Optimizer {
           currentPrice: inputs.priceStats.currentPrice
         });
         tankReason = moveAwayFromCurrent
-          ? `Maintaining adaptive tank target (${hwAction.reason ?? 'no immediate price or usage signal'})`
+          ? `Maintaining adaptive tank target (${hwAction?.reason ?? 'no immediate price or usage signal'})`
           : `Holding tank setpoint (adaptive target ${resolvedTarget}°C within ${maintainHysteresisC}°C hysteresis)`;
       } else {
         // No hotWaterAction available: fall back to direct price-level heuristic
@@ -2112,7 +2225,7 @@ export class Optimizer {
 
       // Occupancy modifier: cap tank target when no one is home to conserve energy,
       // unless we are in an explicit cheap-window heat_now that makes pre-heating worthwhile.
-      if (!this.occupied && hwAction?.action !== 'heat_now') {
+      if (!this.occupied && effectiveAction !== 'heat_now') {
         const awayMax = tankCons.minTemp + Math.round((tankCons.maxTemp - tankCons.minTemp) * 0.3);
         if (tankTarget > awayMax) {
           tankTarget = awayMax;
@@ -2122,6 +2235,8 @@ export class Optimizer {
 
       this.logger.log('Tank target resolved', {
         hwAction: hwAction?.action ?? 'none',
+        effectiveAction: effectiveAction ?? 'none',
+        scheduledOverride: hwActionOverride ?? null,
         occupied: this.occupied,
         tankTarget,
         tankReason
