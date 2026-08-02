@@ -280,5 +280,8 @@
   },
   "14.0.61": {
     "en": "Hot water usage is now learned from actual tank draw instead of the heat pump reheating, so peak hours reflect your household rather than the app schedule."
+  },
+  "14.0.62": {
+    "en": "Stops the optimizer rewarding itself for doing nothing, correctly detects summer from heating efficiency, and improves how hot water usage is detected."
   }
 }

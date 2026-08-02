@@ -2498,7 +2498,7 @@ export class Optimizer {
       savings.total = savings.zone1 + savings.zone2 + savings.tank;
 
       const currentCOP = zone1Result.metrics?.realHeatingCOP || zone1Result.metrics?.realHotWaterCOP;
-      this.learnFromOptimizationOutcome(savings.total, comfortViolations, currentCOP);
+      this.learnFromOptimizationOutcome(savings.total, comfortViolations, currentCOP, zone1Result.metrics?.seasonalMode);
       this.logger.log(`Enhanced temperature adjusted from ${zone1Result.safeCurrentTarget.toFixed(1)}°C to ${zone1Result.targetTemp.toFixed(1)}°C`, {
         reason: zone1Result.reason,
         savingsEstimated: this.savingsService.estimateCostSavings(
@@ -2515,7 +2515,14 @@ export class Optimizer {
 
     try {
       const baselineSetpoint = inputs.constraintsBand.maxTemp;
-      if (baselineSetpoint > zone1Result.safeCurrentTarget + 0.1) {
+      // The counterfactual is "a fixed thermostat parked at the top of the band". That is only
+      // meaningful while the pump could actually have heated. When the room is already above the
+      // band, a fixed thermostat would not have called for heat either — the counterfactual and
+      // the actual are identical and the true saving is zero. Booking a difference here produced
+      // a positive number every hour of summer, which then fed learnFromOutcome as a reward.
+      if (zone1Result.heatDemandHold) {
+        this.logger.log('Skipping zone1 baseline savings: room above band, a fixed thermostat would not have heated either');
+      } else if (baselineSetpoint > zone1Result.safeCurrentTarget + 0.1) {
         savings.zone1 += await this.savingsService.calculateRealHourlySavings(
           baselineSetpoint,
           zone1Result.safeCurrentTarget,
@@ -2559,14 +2566,27 @@ export class Optimizer {
 
     savings.total = savings.zone1 + savings.zone2 + savings.tank;
 
+    // Learning requires an outcome, and an outcome requires an action. On this path nothing was
+    // written to zone 1, so the only admissible evidence is another actuator having moved.
+    //
+    // Without this the reward was positive by construction on every hold: the accrual above is
+    // sign-guarded, so `goodSavings = actualSavings > 0` was always true and learnFromOutcome
+    // took its ×1.02 branch every hour. Measured on a live device: priceWeightSummer walked
+    // 0.7 → 0.8202 in 8 cycles (exactly 1.02^8) and was heading for the 0.9 ceiling. Fixing the
+    // comfort-violation arm alone only inverted the ratchet; this closes the other arm.
+    const actuatorMoved = applied.tankApplied || applied.zone2Applied;
+
     if (
+      actuatorMoved &&
       Number.isFinite(savings.total) &&
       savings.total >= MIN_SAVINGS_FOR_LEARNING &&
       !applied.lockoutActive
     ) {
       const currentCOP = zone1Result.metrics?.realHeatingCOP ?? zone1Result.metrics?.realHotWaterCOP ?? null;
-      this.learnFromOptimizationOutcome(savings.total, comfortViolations, currentCOP ?? undefined);
+      this.learnFromOptimizationOutcome(savings.total, comfortViolations, currentCOP ?? undefined, zone1Result.metrics?.seasonalMode);
       this.logger.log(`Learned from hold: savings = ${savings.total.toFixed(3)}, COP = ${currentCOP?.toFixed(2) ?? 'N/A'} `);
+    } else if (!actuatorMoved && savings.total >= MIN_SAVINGS_FOR_LEARNING) {
+      this.logger.log(`Not learning: nothing was written this cycle (estimated savings ${savings.total.toFixed(3)} is a counterfactual, not an outcome)`);
     }
 
     return savings;
@@ -2747,8 +2767,13 @@ export class Optimizer {
    * @param comfortViolations Number of comfort violations
    * @param currentCOP Current COP performance
    */
-  public learnFromOptimizationOutcome(actualSavings: number, comfortViolations: number, currentCOP?: number): void {
-    this.calibrationService.learnFromOptimizationOutcome(actualSavings, comfortViolations, currentCOP);
+  public learnFromOptimizationOutcome(
+    actualSavings: number,
+    comfortViolations: number,
+    currentCOP?: number,
+    controlSeason?: 'summer' | 'winter' | 'transition'
+  ): void {
+    this.calibrationService.learnFromOptimizationOutcome(actualSavings, comfortViolations, currentCOP, controlSeason);
   }
 
   /**

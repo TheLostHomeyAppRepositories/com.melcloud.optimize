@@ -32,6 +32,8 @@ export interface DrawEstimateOptions {
    * connectivity loss) cannot be attributed to a single hour and are skipped.
    */
   maxIntervalMinutes?: number;
+  /** Fall rate (°C/h) above which a drop is treated as an unambiguous draw. */
+  rapidDrawCPerHour?: number;
   /** Optional recency weighting, keyed by the sample ending the interval. */
   weightFn?: (sample: DrawSample) => number;
 }
@@ -43,6 +45,10 @@ export interface DrawEstimate {
   usableIntervals: number;
   /** Number of distinct hours of day with at least one usable interval. */
   hoursCovered: number;
+  /** Standing-loss rate actually used, either calibrated from the data or the supplied default. */
+  standingLossCPerHourUsed: number;
+  /** Intervals attributed as an unambiguous rapid draw, including any mid-reheat. */
+  rapidDrawIntervals: number;
 }
 
 /** Below this, a computed draw is floating-point residue rather than a real temperature change. */
@@ -51,6 +57,24 @@ const DRAW_EPSILON_C = 1e-6;
 export const DEFAULT_STANDING_LOSS_C_PER_HOUR = 0.4;
 export const DEFAULT_MAX_INTERVAL_MINUTES = 30;
 
+/**
+ * Fall rate above which a temperature drop is unambiguously a draw rather than standing loss.
+ *
+ * A well-insulated tank loses well under 1 °C/h standing. Anything falling faster than this is
+ * water leaving the tank, so it is counted even when the pump has already started reheating —
+ * which matters, because a real draw *triggers* reheat, and excluding all heating intervals
+ * therefore filtered out precisely the events worth learning from.
+ */
+export const DEFAULT_RAPID_DRAW_C_PER_HOUR = 3.0;
+
+/**
+ * Percentile of observed idle fall rates used as the standing-loss baseline. A low percentile
+ * approximates "cooling with nobody using hot water"; the excess above it is draw. Measuring
+ * this beats assuming it, because tanks differ and a wrong fixed allowance turns ordinary
+ * overnight cooling into phantom night-time "usage".
+ */
+export const STANDING_LOSS_PERCENTILE = 0.4;
+
 export function estimateHourlyDraw(
   samples: DrawSample[],
   options: DrawEstimateOptions = {}
@@ -58,6 +82,7 @@ export function estimateHourlyDraw(
   const {
     standingLossCPerHour = DEFAULT_STANDING_LOSS_C_PER_HOUR,
     maxIntervalMinutes = DEFAULT_MAX_INTERVAL_MINUTES,
+    rapidDrawCPerHour = DEFAULT_RAPID_DRAW_C_PER_HOUR,
     weightFn
   } = options;
 
@@ -66,51 +91,90 @@ export function estimateHourlyDraw(
   let usableIntervals = 0;
 
   if (!Array.isArray(samples) || samples.length < 2) {
-    return { hourlyDraw, usableIntervals: 0, hoursCovered: 0 };
+    return {
+      hourlyDraw,
+      usableIntervals: 0,
+      hoursCovered: 0,
+      standingLossCPerHourUsed: standingLossCPerHour,
+      rapidDrawIntervals: 0
+    };
   }
 
   const ordered = samples
     .filter(s => s && Number.isFinite(s.tankTemperature) && Number.isFinite(Date.parse(s.timestamp)))
     .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
 
+  interface Interval {
+    hour: number;
+    minutes: number;
+    fallRate: number;
+    idle: boolean;
+    sample: DrawSample;
+  }
+
+  const intervals: Interval[] = [];
   for (let i = 1; i < ordered.length; i++) {
     const prev = ordered[i - 1];
     const curr = ordered[i];
 
-    // Any reheat during the interval means the tank temperature reflects the pump, not the tap.
-    if (prev.isHeating || curr.isHeating) {
+    const minutes = (Date.parse(curr.timestamp) - Date.parse(prev.timestamp)) / 60000;
+    if (!(minutes > 0) || minutes > maxIntervalMinutes) {
+      continue;
+    }
+    if (!(curr.hourOfDay >= 0 && curr.hourOfDay < 24)) {
       continue;
     }
 
-    const intervalMinutes = (Date.parse(curr.timestamp) - Date.parse(prev.timestamp)) / 60000;
-    if (!(intervalMinutes > 0) || intervalMinutes > maxIntervalMinutes) {
+    intervals.push({
+      hour: curr.hourOfDay,
+      minutes,
+      fallRate: ((prev.tankTemperature - curr.tankTemperature) / minutes) * 60,
+      idle: !prev.isHeating && !curr.isHeating,
+      sample: curr
+    });
+  }
+
+  // Calibrate the standing-loss baseline from the tank's own idle behaviour rather than trusting
+  // the default. Only gentle falls are considered, so genuine draws do not inflate the baseline.
+  const idleFallRates = intervals
+    .filter(iv => iv.idle && iv.fallRate > 0 && iv.fallRate < rapidDrawCPerHour)
+    .map(iv => iv.fallRate)
+    .sort((a, b) => a - b);
+
+  const standingLoss = idleFallRates.length >= 20
+    ? idleFallRates[Math.min(idleFallRates.length - 1, Math.floor(idleFallRates.length * STANDING_LOSS_PERCENTILE))]
+    : standingLossCPerHour;
+
+  let rapidDrawIntervals = 0;
+
+  for (const iv of intervals) {
+    // A fall this fast is water leaving the tank. Count it even mid-reheat: the draw is what
+    // caused the reheat, and skipping those intervals discards the strongest evidence there is.
+    const isRapidDraw = iv.fallRate > rapidDrawCPerHour;
+
+    if (!iv.idle && !isRapidDraw) {
       continue;
     }
 
     usableIntervals++;
+    hourSeen[iv.hour] = true;
 
-    const hour = curr.hourOfDay;
-    if (hour >= 0 && hour < 24) {
-      hourSeen[hour] = true;
+    const excessRate = isRapidDraw ? iv.fallRate : iv.fallRate - standingLoss;
+    const attributableDraw = (excessRate * iv.minutes) / 60;
 
-      const drop = prev.tankTemperature - curr.tankTemperature;
-      const expectedStandingLoss = (standingLossCPerHour * intervalMinutes) / 60;
-      const rawDraw = drop - expectedStandingLoss;
-      // Tank temperatures arrive at 0.5 °C resolution at best, so anything at floating-point
-      // scale is arithmetic residue rather than a draw.
-      const attributableDraw = rawDraw > DRAW_EPSILON_C ? rawDraw : 0;
-
-      if (attributableDraw > 0) {
-        const weight = weightFn ? weightFn(curr) : 1;
-        hourlyDraw[hour] += attributableDraw * weight;
-      }
+    if (attributableDraw > DRAW_EPSILON_C) {
+      if (isRapidDraw) rapidDrawIntervals++;
+      const weight = weightFn ? weightFn(iv.sample) : 1;
+      hourlyDraw[iv.hour] += attributableDraw * weight;
     }
   }
 
   return {
     hourlyDraw,
     usableIntervals,
-    hoursCovered: hourSeen.filter(Boolean).length
+    hoursCovered: hourSeen.filter(Boolean).length,
+    standingLossCPerHourUsed: standingLoss,
+    rapidDrawIntervals
   };
 }
 

@@ -298,9 +298,20 @@ describe('EnergyMetricsService', () => {
     });
 
     it('should NOT force summer in a genuine shoulder period with real heat output', () => {
-      // Real heating happening (produced above the floor) -> classifier unaffected by the guard.
-      const result = service.determineSeason(8, 5, 6);
+      // Real heating happening -> classifier unaffected by either summer guard.
+      // 24 kWh produced from 8 kWh consumed is COP 3.0, typical for an air-to-water unit in
+      // shoulder conditions. The original fixture used 6 kWh produced from 8 consumed, i.e.
+      // COP 0.75 - a pump delivering less heat than the electricity it draws, which is not a
+      // shoulder period but the parasitic-standby signature the COP guard exists to catch.
+      const result = service.determineSeason(8, 5, 24);
       expect(result).toBe('transition');
+    });
+
+    it('should classify sub-unity heating COP as summer even when kWh look substantial', () => {
+      // Live 2026-08-01 values, scaled: the pump drew 1.766 kWh and produced 1.221 kWh at 17 C
+      // outdoor. That cleared the 0.5 kWh produced floor and was classified 'transition' all
+      // summer, which is the bug this guard closes.
+      expect(service.determineSeason(1.766, 1.467, 1.221)).toBe('summer');
     });
   });
 

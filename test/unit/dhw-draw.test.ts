@@ -26,13 +26,60 @@ describe('estimateHourlyDraw', () => {
   });
 
   // The whole point of the change: reheat is caused by the controller, not the household.
-  test('ignores intervals where the pump was heating', () => {
+  test('ignores gentle changes while the pump was heating', () => {
     const samples = [sample(120, 44, true), sample(125, 48, true), sample(130, 50, true)];
 
     const { hourlyDraw, usableIntervals } = estimateHourlyDraw(samples);
 
     expect(usableIntervals).toBe(0);
     expect(hourlyDraw.every(v => v === 0)).toBe(true);
+  });
+
+  // A real draw triggers reheat, so excluding every heating interval discarded the strongest
+  // evidence available. A fall this fast cannot be standing loss whatever the pump is doing.
+  test('counts a rapid fall even while the pump is reheating', () => {
+    // 4 C in 5 minutes = 48 C/h, far beyond any standing loss.
+    const samples = [sample(420, 50, true), sample(425, 46, true)];
+
+    const { hourlyDraw, rapidDrawIntervals } = estimateHourlyDraw(samples);
+
+    expect(rapidDrawIntervals).toBe(1);
+    expect(hourlyDraw[7]).toBeCloseTo(4, 3);
+  });
+
+  test('a gentle idle fall is still treated as standing loss, not draw', () => {
+    const samples = [sample(180, 50), sample(185, 49.95)];
+
+    const { rapidDrawIntervals } = estimateHourlyDraw(samples);
+
+    expect(rapidDrawIntervals).toBe(0);
+  });
+
+  // The failure seen live: a fixed 0.4 C/h allowance under-estimated this tank's real standing
+  // loss, so ordinary overnight cooling was attributed as night-time "usage".
+  test('calibrates the standing-loss baseline from the tank itself', () => {
+    // 40 idle intervals all cooling at ~1.2 C/h - well above the 0.4 default.
+    const samples = [];
+    let temp = 55;
+    for (let i = 0; i <= 40; i++) {
+      samples.push(sample(120 + i * 5, temp));
+      temp -= 0.1; // 0.1 C per 5 min = 1.2 C/h
+    }
+
+    const { standingLossCPerHourUsed, hourlyDraw } = estimateHourlyDraw(samples);
+
+    expect(standingLossCPerHourUsed).toBeGreaterThan(1.0);
+    // With the baseline measured rather than assumed, steady cooling yields no phantom draw.
+    const total = hourlyDraw.reduce((a, b) => a + b, 0);
+    expect(total).toBeLessThan(0.5);
+  });
+
+  test('falls back to the supplied default when there is too little idle data to calibrate', () => {
+    const samples = [sample(420, 50), sample(425, 49.9)];
+
+    const { standingLossCPerHourUsed } = estimateHourlyDraw(samples, { standingLossCPerHour: 0.4 });
+
+    expect(standingLossCPerHourUsed).toBe(0.4);
   });
 
   test('a rising tank while idle contributes no draw', () => {

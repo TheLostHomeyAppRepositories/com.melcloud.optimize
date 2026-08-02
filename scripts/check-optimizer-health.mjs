@@ -136,13 +136,20 @@ function checkHotWaterPattern(hw) {
 
   const spread = Math.max(...pattern) / (Math.min(...pattern.filter(v => v > 0)) || 1);
 
-  // The old reheat-derived signal put peaks at 0/19/20/21/23 — night and late evening, which is
-  // the optimizer's own heating schedule rather than household behaviour.
-  const nightHeavy = peaks.filter(h => h === 0 || h >= 22).length >= 2;
-  const hasMorning = peaks.some(h => h >= 5 && h <= 9);
+  // Overnight hours (23-05) are when nobody draws hot water but the tank cools undisturbed, so a
+  // profile concentrated there means standing loss is being read as draw rather than the
+  // household being nocturnal. This is the failure the first draw estimator actually produced:
+  // peaks at 02/04/05 with the real morning peak buried.
+  const overnight = peaks.filter(h => h >= 23 || h <= 5).length;
+  const hasMorning = peaks.some(h => h >= 6 && h <= 9);
+  const hasEvening = peaks.some(h => h >= 17 && h <= 22);
 
-  if (nightHeavy && !hasMorning) {
-    record(WARN, 'DHW peak hours', `${peakStr} — night-heavy with no morning peak. This resembles the old reheat-derived signal; verify the draw estimator is producing usable intervals.`);
+  if (overnight >= 3) {
+    record(FAIL, 'DHW peak hours', `${peakStr} — ${overnight} of 5 peaks fall overnight (23-05). Standing loss is very likely being read as draw; check standingLossCPerHourUsed.`);
+  } else if (!hasMorning && !hasEvening) {
+    record(WARN, 'DHW peak hours', `${peakStr} — no morning or evening peak, which is unusual for a household.`);
+  } else if (!Number.isFinite(spread) || spread > 100) {
+    record(WARN, 'DHW peak hours', `${peakStr} — spread ${spread.toExponential(1)}x is degenerate; the profile rests on very few intervals.`);
   } else {
     record(PASS, 'DHW peak hours', `${peakStr} (spread ${spread.toFixed(1)}x)`);
   }
