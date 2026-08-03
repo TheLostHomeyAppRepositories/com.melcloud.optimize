@@ -286,5 +286,8 @@
   },
   "14.0.63": {
     "en": "Savings figures are now correct: the daily and weekly numbers finally measure the same thing, and the average is shown per day rather than as a percentage."
+  },
+  "14.0.64": {
+    "en": "Summer savings are no longer measured against heating that never happens, price classification uses a comparable time resolution, and a hold is no longer described as an adjustment."
   }
 }

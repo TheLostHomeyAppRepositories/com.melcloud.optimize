@@ -1243,14 +1243,27 @@ const apiHandlers: ApiHandlers = {
                     }
                   }
 
+                  // determineSeason now discriminates on heating efficiency, so 'summer' means the
+                  // pump is genuinely not space heating. The baseline must reflect that: a
+                  // constant-temperature thermostat in the same house and weather would not have
+                  // called for heat either, so charging it for heating makes the whole comparison
+                  // fiction. Measured live in August: ~3.5 of a 6.5 kWh/day baseline was space
+                  // heating that never happened — over half the displayed "saving".
+                  const spaceHeatingActive = result.energyMetrics?.seasonalMode !== 'summer';
+
                   const baselineOptions: any = {
                     enableBaseline: true,
                     baselineConfig: {
                       heatingSetpoint: 21,
                       hotWaterSetpoint: 60,
-                      operatingProfile: 'always_on'
+                      operatingProfile: 'always_on',
+                      spaceHeatingActive
                     }
                   };
+
+                  if (!spaceHeatingActive) {
+                    homey.app.log('Baseline excludes space heating: season is summer, so the comparison is hot-water only');
+                  }
 
                   if (actualConsumptionKWh !== undefined) baselineOptions.actualConsumptionKWh = actualConsumptionKWh;
                   if (actualCost !== undefined) baselineOptions.actualCost = actualCost;

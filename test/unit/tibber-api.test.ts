@@ -356,11 +356,20 @@ describe('TibberApi', () => {
       // Verify the formatted data
       expect(result).toHaveProperty('current');
       expect(result).toHaveProperty('prices');
-      expect(result.current.price).toBe(0.15);
       expect(result.prices.length).toBeGreaterThan(0);
       expect(result.intervalMinutes).toBe(15);
       expect(result.quarterHourly?.length).toBe(8);
       expect(result.prices[0].price).toBeCloseTo(0.18, 5);
+
+      // `current` must be rank-comparable with `prices`. Those are hourly means once quarter-hour
+      // data is aggregated, so publishing the raw 15-minute price here meant the classifier ranked
+      // a quarter against a distribution of hourly averages — a rising quarter can exceed the mean
+      // of every hour and score percentile 100 on an ordinary day.
+      expect(result.current.price).toBeCloseTo(0.18, 5);
+      expect(result.current.price).toBe(result.prices[0].price);
+
+      // The raw quarter is still available for decisions that need the finer resolution.
+      expect(result.currentQuarter?.price).toBe(0.15);
     });
 
     it('should detect and handle stale price data from cache', async () => {

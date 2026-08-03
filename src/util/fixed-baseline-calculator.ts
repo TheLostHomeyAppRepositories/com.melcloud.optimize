@@ -21,6 +21,16 @@ export interface BaselineConfig {
   assumedHeatingCOP?: number;   // Default COP when not using learned values
   assumedHotWaterCOP?: number;  // Default COP when not using learned values
   
+  /**
+   * Whether space heating is genuinely running. When false the space-heating component of the
+   * baseline is zero: the baseline is "a constant-temperature thermostat in this same house and
+   * weather", and such a thermostat would not call for heat either. Charging it for heating the
+   * pump is not doing turns the whole comparison into fiction — measured live in August, ~3.5 of
+   * a 6.5 kWh/day baseline was space heating that never happened, i.e. over half the displayed
+   * "saving". Undefined preserves the legacy weather-only estimate.
+   */
+  spaceHeatingActive?: boolean;
+
   // Comfort schedule for 'schedule' mode
   scheduleConfig?: {
     dayStart: number;           // Hour when heating starts (e.g., 6)
@@ -362,6 +372,14 @@ export class FixedBaselineCalculator {
     avgOutdoorTemp: number,
     heatingCOP: number
   ): number {
+    // No space heating happening -> a fixed-setpoint thermostat would not have heated either.
+    if (config.spaceHeatingActive === false) {
+      this.safeDebug('Baseline space heating set to zero: no space heating is occurring', {
+        avgOutdoorTemp: avgOutdoorTemp.toFixed(1)
+      });
+      return 0;
+    }
+
     const effectiveHeatingHours = this.getEffectiveHeatingHours(config, hours);
     
     // Calculate heating demand based on temperature difference and season

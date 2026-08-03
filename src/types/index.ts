@@ -83,6 +83,12 @@ export interface TibberPriceInfo {
     price: number;
     time: string;
   };
+  /**
+   * Raw sub-hourly price for the current instant, when the provider supplies one.
+   * `current` is deliberately the hourly-mean bucket so it can be ranked against `prices`;
+   * this is the unaggregated value, for block-edge decisions that need the finer resolution.
+   */
+  currentQuarter?: PricePoint;
   prices: PricePoint[];
   quarterHourly?: PricePoint[];
   intervalMinutes?: number;

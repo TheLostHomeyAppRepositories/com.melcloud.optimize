@@ -195,8 +195,14 @@ export function buildDecisionFromOptimization(
     }
   }
 
-  // Learning/comfort reaction hint (if reason mentions comfort violation)
-  if (typeof reason === 'string' && reason.toLowerCase().includes('comfort')) {
+  // Learning/comfort reaction hint. Requires an actual setpoint change: the only optimizer
+  // reasons containing "comfort" are hold reasons ("Room above comfort band — setpoint has no
+  // effect"), so matching on the word alone relabelled every hold as an adjustment and produced
+  // self-contradicting output — headline "Adjusting to 21.0°C" above body "Room: Holding 21.0°C".
+  const temperatureChanged =
+    typeof fromTemp === 'number' && typeof toTemp === 'number' && Math.abs(toTemp - fromTemp) > 1e-6;
+
+  if (temperatureChanged && typeof reason === 'string' && reason.toLowerCase().includes('comfort')) {
     code = 'LEARNING_ADJUST';
   }
 
