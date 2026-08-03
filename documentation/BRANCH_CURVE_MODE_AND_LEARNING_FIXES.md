@@ -1,6 +1,6 @@
 # Branch: `fix/curve-mode-and-learning-guards`
 
-> **Status:** Phases 1 and 3 complete and deployed as a dev build (14.0.61). Phase 2, 4 and 5 open.
+> **Status:** Phases 1, 2 and 3 complete and deployed as a dev build (14.0.64). Phases 4 and 5 open.
 > **Baseline for comparison:** `main` / App Store build **14.0.54**.
 > **Investigation date:** 2026-08-01. All live figures below were measured on the author's Homey Pro, not estimated.
 
@@ -190,6 +190,56 @@ Commits, oldest first. All were deployed as dev builds and verified live.
 shipped), and four tank-reheat-commitment tests in `test/unit/optimizer.enhanced.coverage.test.ts`.
 
 Suite: **1040 passing, 0 failing.** `npm run lint` (= `tsc --noEmit`) clean.
+
+### `14.0.62` — the ratchet's other arm, season, and draw estimation
+
+Found by running the previous release for 24 hours and reading the live data back.
+
+- **The ratchet was still running, inverted.** Fixing the comfort arm left `goodSavings` true
+  every cycle, because the hold path still accrued savings against a `maxTemp` baseline.
+  Measured: `priceWeightSummer` walked 0.7 → 0.8202 in 8 cycles (exactly `1.02^8`). Learning now
+  requires an actuator to have moved, and the zone-1 hold accrual is skipped under
+  `heatDemandHold`. **Consequence: learning is dormant in summer.** That is correct — there is no
+  outcome to learn from — but confirm it resumes in autumn.
+- **Learning updated a parameter the controller does not read.** `calibration-service` picked the
+  season by calendar month (August → summer) while control used `determineSeason` (→ transition).
+  The control season is now threaded through, calendar kept as fallback.
+- **`determineSeason` now tests efficiency** (`produced/consumed < 1.5 → summer`), not just
+  absolute kWh. Fixes R12.
+- **Draw estimator rewritten.** The first version had two flaws: a fixed 0.4 °C/h standing-loss
+  allowance under-estimated this tank so overnight cooling read as draw, and excluding every
+  heating interval discarded real draws — because a draw *triggers* the reheat that then masks
+  it. Standing loss is now calibrated from the tank's own idle behaviour (a low percentile of
+  idle fall rates) and falls faster than 3 °C/h count as draw regardless of heating state.
+
+Live result after 24h: peaks moved from `02, 04, 05, 07, 23` (spread 1.9×10⁷) to
+`09, 16, 17, 20, 23` (spread 12.8×) with an overnight trough at 02-08. Household-shaped.
+
+### `14.0.63` — the savings display (Phase 2, part 1)
+
+`optimizedMinor` held the *saving* while its name and every reader treated it as a *cost*, so
+`baselineMinor - optimizedMinor` computed `cost - saving` — the quantity summed into the 7-day
+total and the monthly projection. Meanwhile the "today" tile read `optimizedMajor` directly, so
+the two tiles on one card reported different quantities. `optimizedMinor` now holds the cost;
+entries carry `schemaVersion` so v1 entries are read from their (correct) `valueMajor` rather
+than silently rewritten to a different wrong number.
+
+Also: the widget rendered a `%` suffix on a currency-per-day figure via a rounding idiom whose
+factors cancel; and the caption claimed "seasonal COP adjustments" that
+`calculateHeatingEnergy`/`calculateHotWaterEnergy` never apply.
+
+### `14.0.64` — the baseline, price resolution, and the headline (Phase 2, part 2)
+
+- **Phantom summer heating removed.** `BaselineConfig.spaceHeatingActive` drives the
+  space-heating term to zero when the season is summer. Previously ~3.5 of a 6.5 kWh/day
+  baseline was heating that never happened — over half the displayed "saving" — against an
+  actual consumption of 3.23 kWh/day.
+- **Quarter-hour ranking mismatch fixed.** `current` was a raw 15-minute price ranked against
+  hourly means. A rising quarter can exceed the mean of every hour and score percentile 100 on an
+  ordinary day (observed: 0.5168 against a window max of 0.512225 → VERY_EXPENSIVE). `current` is
+  now the hourly bucket; the raw value is published as `currentQuarter`.
+- **`LEARNING_ADJUST` requires an actual temperature change**, so a hold is no longer titled
+  "Adjusting to 21.0 °C" above a body reading "Room: Holding 21.0 °C".
 
 ---
 
