@@ -228,6 +228,16 @@ async function httpRequest(
 
 // Optimizer Service
 // Create instances of services
+/**
+ * Schema version for `display_savings_history` entries.
+ *
+ * v2 stores the optimized **cost** in `optimizedMinor`. v1 (unversioned) stored the **saving**
+ * there, so `baselineMinor - optimizedMinor` produced `cost - saving` — the quantity the 7-day
+ * total and the monthly projection were built from. Entries without this field are read using
+ * their stored `valueMajor`, which was always the saving and is correct as written.
+ */
+const SAVINGS_ENTRY_SCHEMA_VERSION = 2;
+
 const serviceState = getServiceState();
 let melCloud = serviceState.melCloud;
 let tibber = serviceState.tibber;
@@ -1275,7 +1285,6 @@ const apiHandlers: ApiHandlers = {
                   entry.currency = currencyCode;
                   entry.decimals = decimals;
                   entry.valueMajor = finalDailySavings;
-                  entry.optimizedMinor = toMinor(Math.max(0, finalDailySavings));
                   entryUpdated = true;
                 }
 
@@ -1284,7 +1293,12 @@ const apiHandlers: ApiHandlers = {
                   entry.currency = currencyCode;
                   entry.decimals = decimals;
                   entry.baselineMinor = toMinor(Math.max(0, baselineCostMajor));
-                  // Keep baseline cost; optimizedMinor already set to savings above
+                  // optimizedMinor holds the optimized COST, so that the reader's
+                  // baseline - optimized genuinely yields the saving. It previously held the
+                  // saving itself, which made that subtraction compute cost - saving: a
+                  // quantity with no meaning, summed into the 7-day total and the projection.
+                  entry.optimizedMinor = toMinor(Math.max(0, optimizedCostMajor));
+                  entry.schemaVersion = SAVINGS_ENTRY_SCHEMA_VERSION;
                   entryUpdated = true;
                 } else if (!hasStoredBaseline && baselineSource !== 'stored') {
                   homey.app.log('Skipping display_savings_history update: no baseline data available for today');
@@ -2876,12 +2890,23 @@ const apiHandlers: ApiHandlers = {
             let optimizedMajor: number | null = null;
             let valueMajor: number | null = null;
 
-            if (Number.isFinite(baselineMinor) && Number.isFinite(optimizedMinor)) {
+            // Entries written before SAVINGS_ENTRY_SCHEMA_VERSION stored the *saving* in
+            // optimizedMinor, so subtracting it from the baseline would yield cost - saving.
+            // Their valueMajor was always the saving and is correct as stored, so use it
+            // directly rather than recomputing. Without this the fix would silently rewrite
+            // history to a different wrong number.
+            const isCostSchema = Number(entry.schemaVersion) >= SAVINGS_ENTRY_SCHEMA_VERSION;
+
+            if (isCostSchema && Number.isFinite(baselineMinor) && Number.isFinite(optimizedMinor)) {
               baselineMajor = Number(minorToMajor(Math.max(0, baselineMinor), entryDecimals).toFixed(entryDecimals));
               optimizedMajor = Number(minorToMajor(Math.max(0, optimizedMinor), entryDecimals).toFixed(entryDecimals));
               const savingsMinor = Math.max(0, baselineMinor - optimizedMinor);
               valueMajor = Number(minorToMajor(savingsMinor, entryDecimals).toFixed(entryDecimals));
             } else if (typeof entry.valueMajor === 'number') {
+              // Legacy entry, or a new one with no baseline available: valueMajor is the saving.
+              if (Number.isFinite(baselineMinor)) {
+                baselineMajor = Number(minorToMajor(Math.max(0, baselineMinor), entryDecimals).toFixed(entryDecimals));
+              }
               valueMajor = Number(entry.valueMajor);
             } else if (typeof entry.value === 'number') {
               valueMajor = Number(entry.value);
@@ -2911,9 +2936,11 @@ const apiHandlers: ApiHandlers = {
           const todayHistory = historyEntries.find(entry => entry.date === todayIso);
           if (todayHistory) {
             if (typeof todayHistory.valueMajor === 'number') {
-              // Prefer optimized/standard savings over baseline deltas when both are present
-              const optimizedValue = typeof todayHistory.optimizedMajor === 'number' ? todayHistory.optimizedMajor : todayHistory.valueMajor;
-              smartSavingsDisplay.today = optimizedValue;
+              // Same field the 7-day total sums. This previously preferred optimizedMajor, which
+              // under the old schema held the saving and so looked plausible - but it meant the
+              // "today" tile and the "last 7 days" tile were reporting different quantities, and
+              // today's own contribution to that week was a different number again.
+              smartSavingsDisplay.today = todayHistory.valueMajor;
             }
             if (todayHistory.seasonMode) {
               smartSavingsDisplay.seasonMode = todayHistory.seasonMode;

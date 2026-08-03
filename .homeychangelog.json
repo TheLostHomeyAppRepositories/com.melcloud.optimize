@@ -283,5 +283,8 @@
   },
   "14.0.62": {
     "en": "Stops the optimizer rewarding itself for doing nothing, correctly detects summer from heating efficiency, and improves how hot water usage is detected."
+  },
+  "14.0.63": {
+    "en": "Savings figures are now correct: the daily and weekly numbers finally measure the same thing, and the average is shown per day rather than as a percentage."
   }
 }
