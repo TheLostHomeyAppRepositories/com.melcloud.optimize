@@ -2548,17 +2548,20 @@ export class Optimizer {
           );
         }
       }
-      if (tankResult && this.getTankConstraints().enabled) {
-        const tankBaselineTarget = this.getTankConstraints().maxTemp;
-        if (tankBaselineTarget > tankResult.toTemp + 0.5) {
-          savings.tank += await this.savingsService.calculateRealHourlySavings(
-            tankBaselineTarget,
-            tankResult.toTemp,
-            inputs.priceStats.currentPrice,
-            zone1Result.metrics,
-            'tank'
-          );
-        }
+      // Tank savings are measured against the setpoint we actually moved from, not against
+      // maxTemp. A maxTemp baseline is a standing charge: it pays out every hour the tank sits
+      // anywhere below maximum, whether or not the optimizer did anything, so it is positive by
+      // construction. That kept `goodSavings` true on every cycle where the tank applied and
+      // walked priceWeightSummer to its 0.9 ceiling even after the comfort arm was fixed.
+      if (tankResult && this.getTankConstraints().enabled && applied.tankApplied
+        && typeof tankResult.fromTemp === 'number' && typeof tankResult.toTemp === 'number') {
+        savings.tank += await this.savingsService.calculateRealHourlySavings(
+          tankResult.fromTemp,
+          tankResult.toTemp,
+          inputs.priceStats.currentPrice,
+          zone1Result.metrics,
+          'tank'
+        );
       }
     } catch (savingsErr) {
       this.logger.warn('Failed to calculate secondary savings contributions (no change path)', { error: savingsErr });

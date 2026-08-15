@@ -289,5 +289,8 @@
   },
   "14.0.64": {
     "en": "Summer savings are no longer measured against heating that never happens, price classification uses a comparable time resolution, and a hold is no longer described as an adjustment."
+  },
+  "14.0.65": {
+    "en": "Fixes price sensitivity drifting to its maximum over time, and makes the summer savings baseline reflect that no space heating is happening."
   }
 }

@@ -53,6 +53,13 @@ export interface AdaptiveParameters {
 // Settings key for storing adaptive parameters
 const ADAPTIVE_PARAMETERS_SETTINGS_KEY = 'adaptive_business_parameters';
 
+/**
+ * How far the price weight drifts back toward its default on a cycle that produced no evidence.
+ * Small enough that genuine learning still accumulates, large enough that the weight cannot sit
+ * far from the default without ongoing evidence supporting it.
+ */
+const NO_EVIDENCE_REVERSION = 0.05;
+
 /** Stored (unblended) learned control parameters, for diagnostics and reset reporting. */
 export interface LearnedControlParameters {
   priceWeightSummer: number;
@@ -285,9 +292,18 @@ export class AdaptiveParametersLearner {
     } else if (!comfortSatisfied) {
       // Comfort violated: be less aggressive with price optimization
       currentWeight *= 0.98;
-    } else if (!goodSavings) {
-      // No savings: be more aggressive
-      currentWeight *= 1.01;
+    } else {
+      // No measurable saving and no comfort problem: no evidence in either direction. Drift back
+      // toward the default rather than compounding.
+      //
+      // This branch previously multiplied by 1.01 ("no savings: be more aggressive"), which meant
+      // two of the three branches increased the weight and only a comfort violation decreased it.
+      // With comfort satisfied — the normal case — the weight could therefore only ever rise, and
+      // did: measured on a live device walking 0.7 to the 0.9 ceiling in under two days, twice,
+      // even after the inputs feeding it were corrected. A ratchet cannot be fixed by cleaning up
+      // what feeds it; the rule itself has to be able to move both ways.
+      const defaultWeight = this.getDefaultPriceWeight(season);
+      currentWeight += (defaultWeight - currentWeight) * NO_EVIDENCE_REVERSION;
     }
     
     // Keep within reasonable bounds
@@ -320,6 +336,14 @@ export class AdaptiveParametersLearner {
   /**
    * Get price weight for season
    */
+  private getDefaultPriceWeight(season: 'summer' | 'winter' | 'transition'): number {
+    switch (season) {
+      case 'summer': return DEFAULT_PARAMETERS.priceWeightSummer;
+      case 'winter': return DEFAULT_PARAMETERS.priceWeightWinter;
+      case 'transition': return DEFAULT_PARAMETERS.priceWeightTransition;
+    }
+  }
+
   private getPriceWeight(season: 'summer' | 'winter' | 'transition'): number {
     switch (season) {
       case 'summer': return this.parameters.priceWeightSummer;

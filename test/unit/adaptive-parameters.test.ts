@@ -159,26 +159,30 @@ describe('AdaptiveParametersLearner', () => {
             expect(newParams.priceWeightSummer).toBeCloseTo(initialWeight * 0.98, 3);
         });
 
-        test('increases weight by ~1% on no savings', () => {
-            // Use stored params with high confidence to avoid blending
+        test('drifts toward the default when there is no evidence either way', () => {
+            // This test previously asserted a ~1% INCREASE on no savings ("no savings: be more
+            // aggressive"). Combined with the ~2% increase on success, that meant two of the three
+            // branches moved the weight up and only a comfort violation moved it down — so with
+            // comfort satisfied the weight could only ever rise. It did, on a live device, walking
+            // to the 0.9 ceiling twice even after the inputs feeding it were corrected.
+            //
+            // A cycle with no saving and no comfort problem is evidence of nothing. The neutral
+            // action is to drift back toward the default, not to compound aggressiveness.
             const mockHomey = createMockHomey({
-                priceWeightTransition: 0.5,
-                confidence: 0.5, // High enough to skip blending
+                priceWeightTransition: 0.8, // above the 0.5 default
+                confidence: 0.5,
                 learningCycles: 50
             } as any);
             const learner = new AdaptiveParametersLearner(mockHomey);
 
-            const initialParams = learner.getParameters();
-            const initialWeight = initialParams.priceWeightTransition;
+            const initialWeight = learner.getLearnedControlParameters().priceWeightTransition;
 
-            // Simulate no savings but comfort maintained
-            learner.learnFromOutcome('transition', -0.5, 0); // Negative savings, no violations
+            learner.learnFromOutcome('transition', -0.5, 0); // no savings, no violations
 
-            const newParams = learner.getParameters();
+            const newWeight = learner.getLearnedControlParameters().priceWeightTransition;
 
-            // Weight should increase by ~1%
-            expect(newParams.priceWeightTransition).toBeGreaterThan(initialWeight);
-            expect(newParams.priceWeightTransition).toBeCloseTo(initialWeight * 1.01, 3);
+            expect(newWeight).toBeLessThan(initialWeight);
+            expect(newWeight).toBeGreaterThan(0.5); // moves toward the default, does not jump to it
         });
 
         test('bounds weight between 0.2 and 0.9', () => {
@@ -1125,4 +1129,65 @@ describe('AdaptiveParametersLearner', () => {
             expect(thresholds.preheatDurationMultiplier).toBe(1.0);
         });
     });
+});
+
+describe('price weight cannot ratchet in one direction', () => {
+  function makeLearner() {
+    const store: Record<string, any> = {};
+    const homey: any = {
+      settings: {
+        get: (k: string) => store[k],
+        set: (k: string, v: any) => { store[k] = v; }
+      },
+      log: jest.fn(),
+      error: jest.fn()
+    };
+    return new AdaptiveParametersLearner(homey);
+  }
+
+  // Regression: two of the three branches used to multiply the weight upward, so with comfort
+  // satisfied it could only ever rise. Measured live walking 0.7 -> the 0.9 ceiling twice.
+  test('repeated cycles with no savings do not drive the weight to the ceiling', () => {
+    const learner = makeLearner();
+
+    for (let i = 0; i < 200; i++) {
+      learner.learnFromOutcome('summer', 0, 0);
+    }
+
+    const weight = learner.getLearnedControlParameters().priceWeightSummer;
+    expect(weight).toBeLessThan(0.9);
+    expect(weight).toBeCloseTo(0.7, 1);
+  });
+
+  test('no-evidence cycles pull a drifted weight back toward the default', () => {
+    const learner = makeLearner();
+
+    // Push it up with genuine savings first.
+    for (let i = 0; i < 40; i++) learner.learnFromOutcome('summer', 1.0, 0);
+    const raised = learner.getLearnedControlParameters().priceWeightSummer;
+    expect(raised).toBeGreaterThan(0.7);
+
+    // Then a long run of nothing happening.
+    for (let i = 0; i < 100; i++) learner.learnFromOutcome('summer', 0, 0);
+    const settled = learner.getLearnedControlParameters().priceWeightSummer;
+
+    expect(settled).toBeLessThan(raised);
+    expect(settled).toBeCloseTo(0.7, 1);
+  });
+
+  test('genuine savings still raise the weight', () => {
+    const learner = makeLearner();
+
+    for (let i = 0; i < 10; i++) learner.learnFromOutcome('summer', 1.0, 0);
+
+    expect(learner.getLearnedControlParameters().priceWeightSummer).toBeGreaterThan(0.7);
+  });
+
+  test('comfort violations still lower the weight', () => {
+    const learner = makeLearner();
+
+    for (let i = 0; i < 10; i++) learner.learnFromOutcome('summer', 1.0, 3);
+
+    expect(learner.getLearnedControlParameters().priceWeightSummer).toBeLessThan(0.7);
+  });
 });
