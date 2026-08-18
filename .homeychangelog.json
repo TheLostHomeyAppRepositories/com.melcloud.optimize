@@ -292,5 +292,8 @@
   },
   "14.0.65": {
     "en": "Important fixes to how the optimizer learns and reports.\n\nYour displayed savings will drop sharply after this update. That is the fix working, not a regression: the old summer baseline compared against heating the pump was never doing, which inflated the figure several times over. The daily and weekly numbers also measured different things, and the average was labelled as a percentage when it was an amount per day.\n\nAlso fixed: price sensitivity drifted to its maximum over time and could not come back down; hot water usage was learned from the pump reheating rather than from water actually being drawn, so peak hours reflected the app schedule instead of your household; the hot water tank could not reach its target within a cheap price window; heat pumps running weather compensation fed invalid data into the temperature model; and some settings combinations could silently freeze the room setpoint."
+  },
+  "14.0.66": {
+    "en": "Important fixes to how the optimizer learns and reports."
   }
 }
