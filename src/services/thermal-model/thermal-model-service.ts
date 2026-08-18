@@ -461,6 +461,25 @@ export class ThermalModelService {
   }
 
   /**
+   * Reset the learned thermal model: characteristics back to defaults with zero confidence,
+   * and optionally discard the collected training data that produced them.
+   *
+   * @param clearCollectedData Also clear raw and aggregated data points. Use when the stored
+   *   samples are themselves invalid (e.g. collected while the device was in Flow/Curve mode),
+   *   otherwise the next analysis run simply relearns the same bad characteristics.
+   */
+  public resetModel(clearCollectedData: boolean = true): ThermalCharacteristics {
+    const characteristics = this.analyzer.resetCharacteristics();
+
+    if (clearCollectedData) {
+      this.dataCollector.clearData(true);
+    }
+
+    this.homey.log(`Thermal model reset (collected data ${clearCollectedData ? 'cleared' : 'kept'})`);
+    return characteristics;
+  }
+
+  /**
    * Get the current thermal characteristics
    */
   public getThermalCharacteristics(): ThermalCharacteristics {

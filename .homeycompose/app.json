@@ -1,6 +1,6 @@
 {
   "id": "com.melcloud.optimize",
-  "version": "14.0.53",
+  "version": "14.0.65",
   "compatibility": ">=12.2.0",
   "sdk": 3,
   "platforms": [
@@ -258,6 +258,10 @@
     "postHotWaterResetPatterns": {
       "method": "POST",
       "path": "/hot-water/reset-patterns"
+    },
+    "postResetLearnedState": {
+      "method": "POST",
+      "path": "/reset-learned-state"
     },
     "postHotWaterClearData": {
       "method": "POST",

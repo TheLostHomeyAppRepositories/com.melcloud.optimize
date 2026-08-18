@@ -4,7 +4,7 @@ import { MelCloudApi } from './melcloud-api';
 import { PriceAnalyzer } from './price-analyzer';
 import { ThermalController } from './thermal-controller';
 import { COPHelper } from './cop-helper';
-import { ThermalModelService } from './thermal-model';
+import { ThermalModelService, ThermalCharacteristics } from './thermal-model';
 import { EnhancedSavingsCalculator, SavingsCalculationResult, OptimizationData } from '../util/enhanced-savings-calculator';
 import { HotWaterOptimizer } from './hot-water-optimizer';
 import { ZoneOptimizer } from './zone-optimizer';
@@ -41,12 +41,33 @@ import { computePlanningBias, updateThermalResponse } from './planning-utils';
 import { applySetpointConstraints } from '../util/setpoint-constraints';
 import { SettingsAccessor } from '../util/settings-accessor';
 import { isNightHour } from '../util/night-setback';
-import { AdaptiveParametersLearner } from './adaptive-parameters';
+import { AdaptiveParametersLearner, LearnedControlParameters } from './adaptive-parameters';
 import { COMFORT_CONSTANTS } from '../constants';
 import { resolvePriceThresholds } from './price-classifier';
+import { isRoomTargetMode, describeZoneMode } from '../util/zone-mode';
 
 // Removed: DEFAULT_HOT_WATER_PEAK_HOURS now comes from HotWaterUsageLearner
 const MIN_SAVINGS_FOR_LEARNING = 0.05; // Minimum savings (SEK-equivalent) to trigger learning on no-change path
+
+/**
+ * Dead zone applied to the tank target on a 'maintain' signal, in °C.
+ *
+ * 'maintain' means no strong price or usage signal, but the targets it resolves to are
+ * memoryless band fractions of the current price level. Without hysteresis the tank chases
+ * every price-level boundary crossing, producing an hourly setpoint write and continuous
+ * compressor churn for a saving that does not cover the cycling.
+ */
+const MAINTAIN_TANK_HYSTERESIS_C = 2.0;
+
+/** Settings key holding the epoch ms of a committed tank reheat, if one is pending. */
+const SCHEDULED_TANK_REHEAT_SETTING = 'dhw_scheduled_reheat_ms';
+
+/**
+ * How late a scheduled reheat may be honoured. The optimizer runs hourly, so a commitment
+ * should be picked up on the next run; anything older is stale and reheating then would land in
+ * an hour that was never chosen for its price.
+ */
+const SCHEDULED_TANK_REHEAT_GRACE_MINUTES = 90;
 
 type DecisionLogger = (event: string, payload: Record<string, unknown>) => void;
 type ConstraintResult = ReturnType<typeof applySetpointConstraints>;
@@ -106,6 +127,14 @@ interface OptimizationInputs {
   previousIndoorTempTs: number | null;
   constraintsBand: { minTemp: number; maxTemp: number };
   safeCurrentTarget: number;
+  /** ATW zone-1 control mode reported by the device: 0 = Room, 1 = Flow, 2 = Curve. */
+  operationModeZone1: number | undefined;
+  /**
+   * True when the device's zone-1 setpoint is genuinely a room-temperature target.
+   * In Flow/Curve mode the setpoint is a water/curve reference, so it must not be
+   * interpreted as, or learned from as, a room target.
+   */
+  roomTargetIsRoomTemp: boolean;
 }
 
 interface Zone1OptimizationResult {
@@ -860,6 +889,47 @@ export class Optimizer {
   }
 
   /**
+   * Reset everything the optimizer has learned back to defaults.
+   *
+   * Intended for recovery after the learning inputs turn out to have been invalid — for example
+   * comfort violations misattributed to the optimizer (which ratchet the price weights and
+   * strategy parameters to their bounds), or thermal data collected while the device was in
+   * Flow/Curve mode (which teaches a negative heating rate). Neither condition self-corrects:
+   * the parameters are clamped at their bounds and the thermal model reports full confidence.
+   *
+   * @param options.clearThermalData Discard collected thermal samples as well, so the next
+   *   analysis cannot simply relearn the same characteristics from the same bad data.
+   */
+  public resetLearnedState(options: { clearThermalData?: boolean } = {}): {
+    adaptiveParameters: { before: LearnedControlParameters; after: LearnedControlParameters } | null;
+    thermalModel: ThermalCharacteristics | null;
+    thermalDataCleared: boolean;
+  } {
+    const clearThermalData = options.clearThermalData !== false;
+
+    let adaptiveParameters: { before: LearnedControlParameters; after: LearnedControlParameters } | null = null;
+    if (this.adaptiveParametersLearner) {
+      adaptiveParameters = this.adaptiveParametersLearner.resetLearnedParameters();
+      this.logger.log(
+        `Adaptive parameters reset: priceWeight summer ${adaptiveParameters.before.priceWeightSummer}→${adaptiveParameters.after.priceWeightSummer}, ` +
+        `winter ${adaptiveParameters.before.priceWeightWinter}→${adaptiveParameters.after.priceWeightWinter}, ` +
+        `transition ${adaptiveParameters.before.priceWeightTransition}→${adaptiveParameters.after.priceWeightTransition}`
+      );
+    }
+
+    let thermalModel: ThermalCharacteristics | null = null;
+    if (this.thermalModelService) {
+      thermalModel = this.thermalModelService.resetModel(clearThermalData);
+    }
+
+    return {
+      adaptiveParameters,
+      thermalModel,
+      thermalDataCleared: clearThermalData && this.thermalModelService !== null
+    };
+  }
+
+  /**
    * COP Normalizer for adaptive heating COP normalization with outlier guards
    * Handles persistence, range learning, and normalization
    */
@@ -1061,7 +1131,17 @@ export class Optimizer {
   private async collectOptimizationInputs(logger: DecisionLogger): Promise<OptimizationInputs> {
     const deviceState = await this.melCloud.getDeviceState(this.deviceId, this.buildingId);
     const currentTemp = deviceState.RoomTemperature || deviceState.RoomTemperatureZone1;
-    const currentTarget = deviceState.SetTemperature || deviceState.SetTemperatureZone1;
+    // Prefer the ATW zone-1 register: it is the field the write path actually sets
+    // (see MelCloudApi.setDeviceTemperature). SetTemperature is the ATA-shaped field and
+    // reading it first made the read asymmetric with the write.
+    const currentTarget = deviceState.SetTemperatureZone1 ?? deviceState.SetTemperature;
+
+    // 0 = Room, 1 = Flow, 2 = Curve. Devices that do not report the field (ATA, older
+    // firmware) are treated as Room so existing behaviour is preserved.
+    const operationModeZone1 = typeof deviceState.OperationModeZone1 === 'number'
+      ? deviceState.OperationModeZone1
+      : undefined;
+    const roomTargetIsRoomTemp = isRoomTargetMode(operationModeZone1);
     const outdoorTemp = deviceState.OutdoorTemperature || 0;
 
     const hotWaterService = this.getHotWaterService();
@@ -1279,7 +1359,9 @@ export class Optimizer {
       previousIndoorTemp,
       previousIndoorTempTs,
       constraintsBand,
-      safeCurrentTarget
+      safeCurrentTarget,
+      operationModeZone1,
+      roomTargetIsRoomTemp
     };
   }
 
@@ -1295,7 +1377,9 @@ export class Optimizer {
       planningReferenceTimeMs,
       thermalResponse,
       constraintsBand,
-      safeCurrentTarget
+      safeCurrentTarget,
+      operationModeZone1,
+      roomTargetIsRoomTemp
     } = inputs;
 
     // Thermal learning moved to after weather fetch (see line ~1307)
@@ -1350,8 +1434,17 @@ export class Optimizer {
       }
     }
 
-    // Collect thermal learning data point AFTER weather fetch to use real weather data
-    if (this.useThermalLearning && this.thermalModelService) {
+    // Collect thermal learning data point AFTER weather fetch to use real weather data.
+    // Skipped outside Room mode: the thermal analyser derives its heating rate from
+    // (targetTemperature - indoorTemperature), and in Flow/Curve mode the setpoint is a water
+    // reference (e.g. 29°C) rather than a room target. That inflates the denominator and holds
+    // the heating branch permanently open, which is how the model learned a negative heating rate.
+    if (this.useThermalLearning && this.thermalModelService && !roomTargetIsRoomTemp) {
+      this.logger.log(
+        `Thermal data point skipped — zone1 is in ${describeZoneMode(operationModeZone1)} mode; ` +
+        `setpoint ${currentTarget ?? 'n/a'}°C is a water/curve reference, not a room target`
+      );
+    } else if (this.useThermalLearning && this.thermalModelService) {
       try {
         const dataPoint = {
           timestamp: new Date().toISOString(),
@@ -1611,7 +1704,7 @@ export class Optimizer {
           hotWaterAction = {
             action: hotWaterSchedule.currentAction,
             reason: hotWaterSchedule.reasoning,
-            scheduledTime: undefined
+            scheduledTime: hotWaterSchedule.scheduledTime
           };
 
           this.logger.log('Pattern-based hot water optimization:', {
@@ -1948,6 +2041,83 @@ export class Optimizer {
     }
   }
 
+  /**
+   * Record that the tank should be reheated at a chosen future time.
+   *
+   * Persisted rather than held in memory so the commitment survives a restart — otherwise a
+   * lowered tank could be left with nothing scheduled to bring it back up.
+   */
+  private recordScheduledTankReheat(scheduledTimeIso: string): void {
+    const scheduledMs = Date.parse(scheduledTimeIso);
+    if (!Number.isFinite(scheduledMs) || !this.homey) {
+      return;
+    }
+
+    try {
+      this.homey.settings.set(SCHEDULED_TANK_REHEAT_SETTING, scheduledMs);
+      this.logger.log(`Tank reheat scheduled for ${scheduledTimeIso}`);
+    } catch (error) {
+      this.logger.error('Failed to persist scheduled tank reheat', error as Error);
+    }
+  }
+
+  /**
+   * Check whether a scheduled reheat has come due, clearing it once consumed or stale.
+   *
+   * The optimizer runs hourly, so a commitment is honoured within the window that follows its
+   * start time. Anything older than that is discarded rather than acted on late — reheating at
+   * an arbitrary later hour would defeat the point of having chosen a cheap one.
+   */
+  private consumeScheduledTankReheat(nowMs: number): {
+    due: boolean;
+    scheduledForIso?: string;
+    minutesLate?: number;
+  } {
+    if (!this.homey) {
+      return { due: false };
+    }
+
+    let scheduledMs: unknown;
+    try {
+      scheduledMs = this.homey.settings.get(SCHEDULED_TANK_REHEAT_SETTING);
+    } catch {
+      return { due: false };
+    }
+
+    if (typeof scheduledMs !== 'number' || !Number.isFinite(scheduledMs)) {
+      return { due: false };
+    }
+
+    const clear = (): void => {
+      try {
+        this.homey?.settings.set(SCHEDULED_TANK_REHEAT_SETTING, null);
+      } catch {
+        // Best effort: a stale commitment expires on age anyway.
+      }
+    };
+
+    if (nowMs < scheduledMs) {
+      return { due: false };
+    }
+
+    const minutesLate = (nowMs - scheduledMs) / 60000;
+    clear();
+
+    if (minutesLate > SCHEDULED_TANK_REHEAT_GRACE_MINUTES) {
+      this.logger.log(
+        `Discarding stale tank reheat commitment (${minutesLate.toFixed(0)}m late, ` +
+        `grace ${SCHEDULED_TANK_REHEAT_GRACE_MINUTES}m)`
+      );
+      return { due: false };
+    }
+
+    return {
+      due: true,
+      scheduledForIso: new Date(scheduledMs).toISOString(),
+      minutesLate: Number(minutesLate.toFixed(1))
+    };
+  }
+
   private async optimizeTank(inputs: OptimizationInputs, zone1Result: Zone1OptimizationResult, logger: DecisionLogger): Promise<TankOptimizationPlan | null> {
     const currentTankTarget = inputs.deviceState.SetTankWaterTemperature;
     if (!this.getTankConstraints().enabled || currentTankTarget === undefined) {
@@ -1957,9 +2127,27 @@ export class Optimizer {
     try {
       let tankTarget = currentTankTarget;
       let tankReason = 'Maintaining current tank temperature';
+      let hwActionOverride: string | undefined;
 
-      const hwAction: { action?: string; reason?: string } | null = zone1Result.hotWaterAction ?? null;
+      const hwAction: { action?: string; reason?: string; scheduledTime?: string } | null =
+        zone1Result.hotWaterAction ?? null;
       const tankCons = this.getTankConstraints();
+
+      // Honour a previously scheduled reheat. Without this, 'delay' only ever lowered the tank
+      // and nothing remembered to bring it back up — the reheat happened by accident, whenever a
+      // later run independently rediscovered a cheap price. Committing to the chosen hour is what
+      // makes "wait for the cheap window" an actual plan rather than a description.
+      const nowMs = Date.now();
+      const scheduledReheat = this.consumeScheduledTankReheat(nowMs);
+      if (scheduledReheat.due) {
+        hwActionOverride = 'heat_now';
+        this.logger.log('Tank reheat commitment is due', {
+          scheduledFor: scheduledReheat.scheduledForIso,
+          minutesLate: scheduledReheat.minutesLate
+        });
+      } else if (hwAction?.action === 'delay' && hwAction.scheduledTime) {
+        this.recordScheduledTankReheat(hwAction.scheduledTime);
+      }
       const hotWaterService = this.getHotWaterService();
       const fallbackTankTarget = (): number => {
         if (inputs.priceStats.priceLevel === 'VERY_CHEAP' || inputs.priceStats.priceLevel === 'CHEAP') {
@@ -1971,15 +2159,23 @@ export class Optimizer {
         return Math.round((tankCons.minTemp + tankCons.maxTemp) / 2);
       };
 
-      if (hwAction?.action === 'heat_now') {
-        // Cheap price window or upcoming usage peak: pre-heat to max
+      // A due reheat commitment outranks the instantaneous price classification: the decision to
+      // wait for this hour was already made when the tank was lowered.
+      const effectiveAction = hwActionOverride ?? hwAction?.action;
+
+      if (effectiveAction === 'heat_now') {
+        // Cheap price window, upcoming usage peak, or a scheduled reheat coming due
         tankTarget = tankCons.maxTemp;
-        tankReason = `Pre-heating tank: ${hwAction.reason ?? 'cheap window or upcoming usage'}`;
-      } else if (hwAction?.action === 'delay') {
+        tankReason = hwActionOverride
+          ? `Pre-heating tank: scheduled reheat window reached`
+          : `Pre-heating tank: ${hwAction?.reason ?? 'cheap window or upcoming usage'}`;
+      } else if (effectiveAction === 'delay') {
         // Expensive price window: reduce to minimum to save energy
         tankTarget = tankCons.minTemp;
-        tankReason = `Conserving tank energy: ${hwAction.reason ?? 'waiting for cheaper window'}`;
-      } else if (hwAction?.action === 'maintain') {
+        tankReason = hwAction?.scheduledTime
+          ? `Conserving tank energy until ${hwAction.scheduledTime}: ${hwAction.reason ?? 'waiting for cheaper window'}`
+          : `Conserving tank energy: ${hwAction?.reason ?? 'waiting for cheaper window'}`;
+      } else if (effectiveAction === 'maintain') {
         // "Maintain" should preserve a steady strategy, not pin the tank to whatever setpoint happened
         // to be active previously. Prefer the hot-water service's adaptive target, then fall back to
         // price-aware midpoint logic so the controller can move away from stale high targets.
@@ -1990,16 +2186,33 @@ export class Optimizer {
           inputs.priceStats.priceLevel
         );
         const maintainSource = Number.isFinite(predictedTarget) ? 'service_prediction' : 'price_fallback';
-        tankTarget = Number.isFinite(predictedTarget) ? Number(predictedTarget) : fallbackTankTarget();
+        const resolvedTarget = Number.isFinite(predictedTarget) ? Number(predictedTarget) : fallbackTankTarget();
+
+        // Hysteresis. Both the service prediction and the price fallback are memoryless — they
+        // map the current price level onto a fixed band fraction — so without a dead zone every
+        // price-level boundary crossing produces a new target and an hourly setpoint write, for
+        // no economic gain. "Maintain" means no strong signal; only move if the adaptive target
+        // has drifted meaningfully away from where the tank already is.
+        const maintainHysteresisC = MAINTAIN_TANK_HYSTERESIS_C;
+        const drift = Math.abs(resolvedTarget - currentTankTarget);
+        const moveAwayFromCurrent = drift >= maintainHysteresisC;
+        tankTarget = moveAwayFromCurrent ? resolvedTarget : currentTankTarget;
+
         this.logger.log('Tank maintain target decision', {
           currentTankTarget,
           predictedTarget: Number.isFinite(predictedTarget) ? Number(predictedTarget) : null,
           maintainSource,
-          resolvedTarget: tankTarget,
+          resolvedTarget,
+          drift: Number(drift.toFixed(2)),
+          hysteresisC: maintainHysteresisC,
+          applied: moveAwayFromCurrent,
+          tankTarget,
           priceLevel: inputs.priceStats.priceLevel,
           currentPrice: inputs.priceStats.currentPrice
         });
-        tankReason = `Maintaining adaptive tank target (${hwAction.reason ?? 'no immediate price or usage signal'})`;
+        tankReason = moveAwayFromCurrent
+          ? `Maintaining adaptive tank target (${hwAction?.reason ?? 'no immediate price or usage signal'})`
+          : `Holding tank setpoint (adaptive target ${resolvedTarget}°C within ${maintainHysteresisC}°C hysteresis)`;
       } else {
         // No hotWaterAction available: fall back to direct price-level heuristic
         tankTarget = fallbackTankTarget();
@@ -2012,7 +2225,7 @@ export class Optimizer {
 
       // Occupancy modifier: cap tank target when no one is home to conserve energy,
       // unless we are in an explicit cheap-window heat_now that makes pre-heating worthwhile.
-      if (!this.occupied && hwAction?.action !== 'heat_now') {
+      if (!this.occupied && effectiveAction !== 'heat_now') {
         const awayMax = tankCons.minTemp + Math.round((tankCons.maxTemp - tankCons.minTemp) * 0.3);
         if (tankTarget > awayMax) {
           tankTarget = awayMax;
@@ -2022,6 +2235,8 @@ export class Optimizer {
 
       this.logger.log('Tank target resolved', {
         hwAction: hwAction?.action ?? 'none',
+        effectiveAction: effectiveAction ?? 'none',
+        scheduledOverride: hwActionOverride ?? null,
         occupied: this.occupied,
         tankTarget,
         tankReason
@@ -2042,7 +2257,14 @@ export class Optimizer {
         deadbandC: tankDeadband,
         minChangeMinutes: this.minSetpointChangeMinutes,
         lastChangeMs: this.getTankState().timestamp,
-        maxDeltaPerChangeC: this.getTankConstraints().tempStep // Enforce max step size for Tank
+        // Ramp cap, deliberately decoupled from the rounding step. Frequency is governed
+        // separately by minChangeMinutes, so a larger cap does not mean more writes — it means
+        // fewer, because the target is reached in one or two runs and subsequent runs are then
+        // suppressed by the deadband instead of stepping 1 °C at a time for hours.
+        maxDeltaPerChangeC: Math.max(
+          this.getTankConstraints().tempStep,
+          COMFORT_CONSTANTS.DEFAULT_TANK_MAX_DELTA_PER_CHANGE
+        )
       });
       logger('constraints.tank.final', {
         proposed: tankTarget,
@@ -2227,7 +2449,21 @@ export class Optimizer {
       tank: 0,
       total: 0
     };
-    const comfortViolations = this.countComfortViolations(inputs.currentTemp, inputs.constraintsBand);
+    // Always drain the sample buffer, but only attribute comfort violations to the optimizer
+    // when it actually moved the setpoint. Otherwise summer solar gain — which pushes the room
+    // above the band while the optimizer is in heat-demand hold and wrote nothing — is scored
+    // as an optimizer failure, ratcheting the adaptive price weight down 2% every cycle until
+    // it pins at its 0.2 floor and the optimizer effectively stops responding to price.
+    const measuredComfortViolations = this.countComfortViolations(inputs.currentTemp, inputs.constraintsBand);
+    const optimizerAffectedRoom = applied.zone1Applied === true && zone1Result.heatDemandHold !== true;
+    const comfortViolations = optimizerAffectedRoom ? measuredComfortViolations : 0;
+
+    if (!optimizerAffectedRoom && measuredComfortViolations > 0) {
+      this.logger.log(
+        `Comfort deviation observed (${measuredComfortViolations}) but not attributed to the optimizer ` +
+        `(zone1Applied=${applied.zone1Applied === true}, heatDemandHold=${zone1Result.heatDemandHold === true})`
+      );
+    }
 
     if (applied.zone1Applied) {
       savings.zone1 = await this.savingsService.calculateRealHourlySavings(
@@ -2262,7 +2498,7 @@ export class Optimizer {
       savings.total = savings.zone1 + savings.zone2 + savings.tank;
 
       const currentCOP = zone1Result.metrics?.realHeatingCOP || zone1Result.metrics?.realHotWaterCOP;
-      this.learnFromOptimizationOutcome(savings.total, comfortViolations, currentCOP);
+      this.learnFromOptimizationOutcome(savings.total, comfortViolations, currentCOP, zone1Result.metrics?.seasonalMode);
       this.logger.log(`Enhanced temperature adjusted from ${zone1Result.safeCurrentTarget.toFixed(1)}°C to ${zone1Result.targetTemp.toFixed(1)}°C`, {
         reason: zone1Result.reason,
         savingsEstimated: this.savingsService.estimateCostSavings(
@@ -2279,7 +2515,14 @@ export class Optimizer {
 
     try {
       const baselineSetpoint = inputs.constraintsBand.maxTemp;
-      if (baselineSetpoint > zone1Result.safeCurrentTarget + 0.1) {
+      // The counterfactual is "a fixed thermostat parked at the top of the band". That is only
+      // meaningful while the pump could actually have heated. When the room is already above the
+      // band, a fixed thermostat would not have called for heat either — the counterfactual and
+      // the actual are identical and the true saving is zero. Booking a difference here produced
+      // a positive number every hour of summer, which then fed learnFromOutcome as a reward.
+      if (zone1Result.heatDemandHold) {
+        this.logger.log('Skipping zone1 baseline savings: room above band, a fixed thermostat would not have heated either');
+      } else if (baselineSetpoint > zone1Result.safeCurrentTarget + 0.1) {
         savings.zone1 += await this.savingsService.calculateRealHourlySavings(
           baselineSetpoint,
           zone1Result.safeCurrentTarget,
@@ -2305,17 +2548,20 @@ export class Optimizer {
           );
         }
       }
-      if (tankResult && this.getTankConstraints().enabled) {
-        const tankBaselineTarget = this.getTankConstraints().maxTemp;
-        if (tankBaselineTarget > tankResult.toTemp + 0.5) {
-          savings.tank += await this.savingsService.calculateRealHourlySavings(
-            tankBaselineTarget,
-            tankResult.toTemp,
-            inputs.priceStats.currentPrice,
-            zone1Result.metrics,
-            'tank'
-          );
-        }
+      // Tank savings are measured against the setpoint we actually moved from, not against
+      // maxTemp. A maxTemp baseline is a standing charge: it pays out every hour the tank sits
+      // anywhere below maximum, whether or not the optimizer did anything, so it is positive by
+      // construction. That kept `goodSavings` true on every cycle where the tank applied and
+      // walked priceWeightSummer to its 0.9 ceiling even after the comfort arm was fixed.
+      if (tankResult && this.getTankConstraints().enabled && applied.tankApplied
+        && typeof tankResult.fromTemp === 'number' && typeof tankResult.toTemp === 'number') {
+        savings.tank += await this.savingsService.calculateRealHourlySavings(
+          tankResult.fromTemp,
+          tankResult.toTemp,
+          inputs.priceStats.currentPrice,
+          zone1Result.metrics,
+          'tank'
+        );
       }
     } catch (savingsErr) {
       this.logger.warn('Failed to calculate secondary savings contributions (no change path)', { error: savingsErr });
@@ -2323,14 +2569,27 @@ export class Optimizer {
 
     savings.total = savings.zone1 + savings.zone2 + savings.tank;
 
+    // Learning requires an outcome, and an outcome requires an action. On this path nothing was
+    // written to zone 1, so the only admissible evidence is another actuator having moved.
+    //
+    // Without this the reward was positive by construction on every hold: the accrual above is
+    // sign-guarded, so `goodSavings = actualSavings > 0` was always true and learnFromOutcome
+    // took its ×1.02 branch every hour. Measured on a live device: priceWeightSummer walked
+    // 0.7 → 0.8202 in 8 cycles (exactly 1.02^8) and was heading for the 0.9 ceiling. Fixing the
+    // comfort-violation arm alone only inverted the ratchet; this closes the other arm.
+    const actuatorMoved = applied.tankApplied || applied.zone2Applied;
+
     if (
+      actuatorMoved &&
       Number.isFinite(savings.total) &&
       savings.total >= MIN_SAVINGS_FOR_LEARNING &&
       !applied.lockoutActive
     ) {
       const currentCOP = zone1Result.metrics?.realHeatingCOP ?? zone1Result.metrics?.realHotWaterCOP ?? null;
-      this.learnFromOptimizationOutcome(savings.total, comfortViolations, currentCOP ?? undefined);
+      this.learnFromOptimizationOutcome(savings.total, comfortViolations, currentCOP ?? undefined, zone1Result.metrics?.seasonalMode);
       this.logger.log(`Learned from hold: savings = ${savings.total.toFixed(3)}, COP = ${currentCOP?.toFixed(2) ?? 'N/A'} `);
+    } else if (!actuatorMoved && savings.total >= MIN_SAVINGS_FOR_LEARNING) {
+      this.logger.log(`Not learning: nothing was written this cycle (estimated savings ${savings.total.toFixed(3)} is a counterfactual, not an outcome)`);
     }
 
     return savings;
@@ -2511,8 +2770,13 @@ export class Optimizer {
    * @param comfortViolations Number of comfort violations
    * @param currentCOP Current COP performance
    */
-  public learnFromOptimizationOutcome(actualSavings: number, comfortViolations: number, currentCOP?: number): void {
-    this.calibrationService.learnFromOptimizationOutcome(actualSavings, comfortViolations, currentCOP);
+  public learnFromOptimizationOutcome(
+    actualSavings: number,
+    comfortViolations: number,
+    currentCOP?: number,
+    controlSeason?: 'summer' | 'winter' | 'transition'
+  ): void {
+    this.calibrationService.learnFromOptimizationOutcome(actualSavings, comfortViolations, currentCOP, controlSeason);
   }
 
   /**

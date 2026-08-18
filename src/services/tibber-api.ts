@@ -364,14 +364,34 @@ export class TibberApi extends BaseApiService {
       const intervalMinutes = this.detectIntervalMinutes(quarterHourlyPrices) ?? undefined;
       const hourlyPrices = this.aggregateToHourly(quarterHourlyPrices);
 
+      const rawCurrent = priceInfo.current ? {
+        time: priceInfo.current.startsAt,
+        price: priceInfo.current.total,
+      } : {
+        time: new Date().toISOString(),
+        price: 0
+      };
+
+      // Rank-comparable current price. `prices` are hourly means once aggregation happens, so
+      // publishing a raw 15-minute price as `current` meant the classifier ranked a quarter
+      // against a distribution of hourly averages — a rising quarter can exceed the mean of
+      // every hour, yielding percentile 100 and VERY_EXPENSIVE on an ordinary day. Observed
+      // live: current 0.5168 against a window whose max was 0.512225.
+      // The raw quarter is still published as `currentQuarter` for block-edge decisions.
+      const currentHourBucket = hourlyPrices.length > 0
+        ? hourlyPrices.find(p => {
+          const start = Date.parse(p.time);
+          return Number.isFinite(start)
+            && Date.parse(rawCurrent.time) >= start
+            && Date.parse(rawCurrent.time) < start + 3600000;
+        })
+        : undefined;
+
       const result: TibberPriceInfo = {
-        current: priceInfo.current ? {
-          time: priceInfo.current.startsAt,
-          price: priceInfo.current.total,
-        } : {
-          time: new Date().toISOString(),
-          price: 0
-        },
+        current: currentHourBucket
+          ? { time: currentHourBucket.time, price: currentHourBucket.price }
+          : rawCurrent,
+        currentQuarter: rawCurrent,
         prices: hourlyPrices.length > 0 ? hourlyPrices : quarterHourlyPrices,
         quarterHourly: quarterHourlyPrices,
         intervalMinutes,

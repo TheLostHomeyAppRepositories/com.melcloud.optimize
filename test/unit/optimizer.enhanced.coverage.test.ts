@@ -297,8 +297,56 @@ describe('Optimizer hotwater & enhanced edge cases', () => {
     );
 
     expect(homey.hotWaterService.getOptimalTankTemperature).toHaveBeenCalledWith(42, 53, 1.12, 'NORMAL');
-    expect(result.toTemp).toBe(50);
+    // 52 -> 48 in one move. The adaptive target has drifted 4°C from the current setpoint, which
+    // clears the maintain hysteresis, and the tank ramp cap (4°C) is wide enough to arrive in a
+    // single write rather than stepping there over several hours.
+    expect(result.toTemp).toBe(48);
     expect(result.needsApply).toBe(true);
+  });
+
+  test('optimizeTank holds the current setpoint when the maintain target is within hysteresis', async () => {
+    const homey: any = {
+      settings: {
+        get: jest.fn(),
+        set: jest.fn()
+      },
+      hotWaterService: {
+        getUsageStatistics: jest.fn().mockReturnValue({
+          statistics: {
+            usageByHourOfDay: new Array(24).fill(0.5),
+            dataPointCount: 24
+          }
+        }),
+        // Only 1°C away from the current 52°C setpoint — no strong signal.
+        getOptimalTankTemperature: jest.fn().mockReturnValue(51)
+      }
+    };
+    optimizer = new Optimizer(mockMel, mockTibber, 'device-1', 1, logger as any, undefined, homey);
+    optimizer.setTankTemperatureConstraints(true, 42, 53, 2);
+
+    const result = await (optimizer as any).optimizeTank(
+      {
+        deviceState: { SetTankWaterTemperature: 52 },
+        priceStats: {
+          currentPrice: 1.12,
+          priceLevel: 'NORMAL',
+          pricePercentile: 84.6
+        },
+        priceClassification: { thresholds: {} }
+      },
+      {
+        hotWaterAction: {
+          action: 'maintain',
+          reason: 'Predictive scheduling found no immediate action'
+        }
+      },
+      jest.fn()
+    );
+
+    // 'maintain' means no strong signal. Chasing a 1°C drift would write a new setpoint every
+    // hour as the price level wanders across band-fraction boundaries, for no economic gain.
+    expect(result.toTemp).toBe(52);
+    expect(result.needsApply).toBe(false);
   });
 
   test('runOptimization prefers MELCloud daily hot water total over learner daily history', async () => {
@@ -366,5 +414,84 @@ describe('Optimizer hotwater & enhanced edge cases', () => {
 
   test('thermal model cleanup helper returns safe defaults when service unavailable', () => {
     expect(optimizer.forceThermalDataCleanup()).toEqual({ success: false, message: 'Thermal model service not initialized' });
+  });
+});
+
+describe('Tank reheat commitment', () => {
+  const logger = createMockLogger();
+
+  function makeHomey(storedReheatMs: number | null) {
+    const store: Record<string, any> = { dhw_scheduled_reheat_ms: storedReheatMs };
+    return {
+      settings: {
+        get: jest.fn((key: string) => store[key]),
+        set: jest.fn((key: string, value: any) => { store[key] = value; })
+      },
+      __store: store
+    } as any;
+  }
+
+  function makeInputs() {
+    return {
+      deviceState: { SetTankWaterTemperature: 45 },
+      priceStats: { currentPrice: 0.9, priceLevel: 'EXPENSIVE', pricePercentile: 90 },
+      priceClassification: { thresholds: {} }
+    };
+  }
+
+  test('a delay with a scheduled time persists a reheat commitment', async () => {
+    const homey = makeHomey(null);
+    const opt: any = new Optimizer(mockMel, mockTibber, 'device-1', 1, logger as any, undefined, homey);
+    opt.setTankTemperatureConstraints(true, 40, 55, 1);
+
+    const scheduledTime = new Date(Date.now() + 3 * 3600000).toISOString();
+    await opt.optimizeTank(makeInputs(), {
+      hotWaterAction: { action: 'delay', reason: 'price high', scheduledTime }
+    }, jest.fn());
+
+    expect(homey.__store.dhw_scheduled_reheat_ms).toBe(Date.parse(scheduledTime));
+  });
+
+  test('a due commitment forces heat_now even while the price still reads expensive', async () => {
+    // Committed 10 minutes ago: within the grace window, so it should fire now.
+    const homey = makeHomey(Date.now() - 10 * 60000);
+    const opt: any = new Optimizer(mockMel, mockTibber, 'device-1', 1, logger as any, undefined, homey);
+    opt.setTankTemperatureConstraints(true, 40, 55, 1);
+
+    const result = await opt.optimizeTank(makeInputs(), {
+      hotWaterAction: { action: 'delay', reason: 'price high' }
+    }, jest.fn());
+
+    expect(result.toTemp).toBeGreaterThan(45);
+    expect(result.reason).toContain('scheduled reheat');
+    // Consumed, so it cannot fire twice.
+    expect(homey.__store.dhw_scheduled_reheat_ms).toBeNull();
+  });
+
+  test('a stale commitment is discarded rather than acted on late', async () => {
+    // 4 hours late - well past the 90 minute grace window.
+    const homey = makeHomey(Date.now() - 4 * 3600000);
+    const opt: any = new Optimizer(mockMel, mockTibber, 'device-1', 1, logger as any, undefined, homey);
+    opt.setTankTemperatureConstraints(true, 40, 55, 1);
+
+    const result = await opt.optimizeTank(makeInputs(), {
+      hotWaterAction: { action: 'delay', reason: 'price high' }
+    }, jest.fn());
+
+    expect(result.reason).not.toContain('scheduled reheat');
+    expect(homey.__store.dhw_scheduled_reheat_ms).toBeNull();
+  });
+
+  test('a future commitment does not fire early', async () => {
+    const homey = makeHomey(Date.now() + 2 * 3600000);
+    const opt: any = new Optimizer(mockMel, mockTibber, 'device-1', 1, logger as any, undefined, homey);
+    opt.setTankTemperatureConstraints(true, 40, 55, 1);
+
+    const result = await opt.optimizeTank(makeInputs(), {
+      hotWaterAction: { action: 'delay', reason: 'price high' }
+    }, jest.fn());
+
+    expect(result.reason).not.toContain('scheduled reheat');
+    expect(typeof homey.__store.dhw_scheduled_reheat_ms).toBe('number');
   });
 });

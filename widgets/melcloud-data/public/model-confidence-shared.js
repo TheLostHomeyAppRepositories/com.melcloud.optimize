@@ -98,8 +98,13 @@
     if (snapshot.savingsMetrics && snapshot.savingsMetrics.averageDailySavings !== null) {
       const avgSavings = Number(snapshot.savingsMetrics.averageDailySavings);
       if (!isNaN(avgSavings)) {
-        const savingsPercent = Math.round(avgSavings * 100) / 100;
-        savingsText = ` • Avg savings: ${savingsPercent.toFixed(1)}%`;
+        // Currency per day, not a percentage. This previously rendered a "%" suffix after a
+        // Math.round(x * 100) / 100 that is a 2-decimal rounding idiom, not a ratio conversion -
+        // the x100 and /100 cancel. A figure of 0.8 SEK/day was displayed as "0.8%".
+        const currency = (snapshot.priceData && snapshot.priceData.currencySymbol)
+          || (snapshot.smartSavingsDisplay && snapshot.smartSavingsDisplay.currencySymbol)
+          || '';
+        savingsText = ` • Avg savings: ${avgSavings.toFixed(2)}${currency ? ' ' + currency : ''}/day`;
       }
     }
 
@@ -204,7 +209,10 @@
     } else if (projectionMajor === null) {
       note = 'Monthly projection appears once a few days of smart savings history are collected.';
     } else {
-      note = 'Estimates compare the optimizer to traditional constant-temperature heating using seasonal COP adjustments.';
+      // The baseline is a flat kWh table: calculateHeatingEnergy and calculateHotWaterEnergy in
+      // fixed-baseline-calculator.ts accept COP parameters and never read them. Do not restore
+      // the "seasonal COP adjustments" wording unless that is actually wired up.
+      note = 'Estimates compare the optimizer to a constant-temperature heating baseline.';
     }
 
     return {

@@ -266,20 +266,32 @@ export class CalibrationService {
    * @param comfortViolations Number of comfort violations
    * @param currentCOP Current COP performance
    */
-  public learnFromOptimizationOutcome(actualSavings: number, comfortViolations: number, currentCOP?: number): void {
+  public learnFromOptimizationOutcome(
+    actualSavings: number,
+    comfortViolations: number,
+    currentCOP?: number,
+    controlSeason?: 'summer' | 'winter' | 'transition'
+  ): void {
     if (!this.adaptiveParametersLearner) return;
 
-    // Determine current season based on month
-    const month = new Date().getMonth();
-    let season: 'summer' | 'winter' | 'transition';
-    if (month >= 5 && month <= 8) {
-      season = 'summer';
-    } else if (month >= 11 || month <= 2) {
-      season = 'winter';
-    } else {
-      season = 'transition';
+    // Prefer the season the controller is actually using. The calendar fallback below disagrees
+    // with it — in August the calendar says 'summer' while the energy-based detector can report
+    // 'transition' — which meant the learner updated priceWeightSummer while the control path
+    // read priceWeightTransition. The weight being trained was not the weight being used.
+    const season = controlSeason ?? this.deriveCalendarSeason();
+
+    if (controlSeason && controlSeason !== this.deriveCalendarSeason()) {
+      this.logger.log(`Learning against control season '${controlSeason}' (calendar would have said '${this.deriveCalendarSeason()}')`);
     }
 
     this.adaptiveParametersLearner.learnFromOutcome(season, actualSavings, comfortViolations, currentCOP);
+  }
+
+  /** Fallback season when the controller has not reported one (e.g. energy metrics unavailable). */
+  private deriveCalendarSeason(): 'summer' | 'winter' | 'transition' {
+    const month = new Date().getMonth();
+    if (month >= 5 && month <= 8) return 'summer';
+    if (month >= 11 || month <= 2) return 'winter';
+    return 'transition';
   }
 }

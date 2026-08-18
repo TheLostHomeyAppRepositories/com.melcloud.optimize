@@ -156,3 +156,140 @@ describe('Issue #2: Deadband + Step Rounding Interaction', () => {
     expect(result.reason).toContain('deadband');
   });
 });
+
+describe('maxDeltaPerChangeC ramp limiting', () => {
+  const rampInput = {
+    currentTargetC: 20,
+    minC: 16,
+    maxC: 26,
+    stepC: 0.5,
+    deadbandC: 0.5,
+    minChangeMinutes: 60,
+    lastChangeMs: null as number | null,
+    maxDeltaPerChangeC: 0.5
+  };
+
+  test('limits a large proposal to one ramp step', () => {
+    const result = applySetpointConstraints({ ...rampInput, proposedC: 25 });
+
+    expect(result.rampLimited).toBe(true);
+    expect(result.constrainedC).toBe(20.5);
+    expect(result.changed).toBe(true);
+  });
+
+  test('does not ramp-limit a proposal already within the cap', () => {
+    const result = applySetpointConstraints({ ...rampInput, proposedC: 20.5 });
+
+    expect(result.rampLimited).toBe(false);
+    expect(result.constrainedC).toBe(20.5);
+    expect(result.changed).toBe(true);
+  });
+
+  // Regression: ramp limiting runs BEFORE the deadband test, so a ramp cap smaller than
+  // the deadband clipped every delta below the deadband and froze the setpoint forever.
+  // deadband_c allows up to 2.0 while temp_step_max caps at 1.0, so this was reachable
+  // from the settings UI (e.g. deadband 0.6 with the default 0.5 step).
+  test('does not freeze when the deadband exceeds the ramp cap', () => {
+    const result = applySetpointConstraints({
+      ...rampInput,
+      deadbandC: 0.6,
+      maxDeltaPerChangeC: 0.5,
+      proposedC: 23
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.constrainedC).toBeGreaterThan(20);
+  });
+
+  test.each([
+    [0.6, 0.5],
+    [1.0, 0.5],
+    [1.5, 1.0],
+    [2.0, 0.5]
+  ])('remains unfrozen for deadband %s with ramp cap %s', (deadbandC, maxDeltaPerChangeC) => {
+    const result = applySetpointConstraints({
+      ...rampInput,
+      deadbandC,
+      maxDeltaPerChangeC,
+      proposedC: 26
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.constrainedC).toBeGreaterThan(20);
+  });
+
+  // The tank ramp cap governs how far one write may move the setpoint; minChangeMinutes governs
+  // how often a write may happen. They are independent, so raising the cap must not increase the
+  // number of writes — it should reduce it, by reaching the target sooner and then being
+  // suppressed by the deadband.
+  describe('tank ramp cap: write count for a full-range move', () => {
+    function simulateHourlyRun(maxDeltaPerChangeC: number): { writes: number; finalC: number } {
+      const minTemp = 40;
+      const maxTemp = 60;
+      let current = minTemp;
+      let writes = 0;
+
+      for (let hour = 0; hour < 24; hour++) {
+        const result = applySetpointConstraints({
+          proposedC: maxTemp,
+          currentTargetC: current,
+          minC: minTemp,
+          maxC: maxTemp,
+          stepC: 1.0,
+          deadbandC: 1.0,
+          minChangeMinutes: 60,
+          lastChangeMs: null,
+          maxDeltaPerChangeC
+        });
+        if (result.changed) {
+          writes++;
+          current = result.constrainedC;
+        }
+      }
+
+      return { writes, finalC: current };
+    }
+
+    test('a 1C cap needs 20 hourly writes and misses any realistic cheap window', () => {
+      const { writes, finalC } = simulateHourlyRun(1.0);
+
+      expect(writes).toBe(20);
+      expect(finalC).toBe(60);
+    });
+
+    test('a 4C cap reaches the target in 5 writes, then stops writing', () => {
+      const { writes, finalC } = simulateHourlyRun(4.0);
+
+      expect(writes).toBe(5);
+      expect(finalC).toBe(60);
+    });
+
+    test('once at target, further runs produce no write', () => {
+      const result = applySetpointConstraints({
+        proposedC: 60,
+        currentTargetC: 60,
+        minC: 40,
+        maxC: 60,
+        stepC: 1.0,
+        deadbandC: 1.0,
+        minChangeMinutes: 60,
+        lastChangeMs: null,
+        maxDeltaPerChangeC: 4.0
+      });
+
+      expect(result.changed).toBe(false);
+    });
+  });
+
+  test('still blocks changes genuinely below the deadband', () => {
+    const result = applySetpointConstraints({
+      ...rampInput,
+      deadbandC: 0.6,
+      maxDeltaPerChangeC: 0.5,
+      proposedC: 20.2
+    });
+
+    expect(result.changed).toBe(false);
+    expect(result.constrainedC).toBe(20);
+  });
+});

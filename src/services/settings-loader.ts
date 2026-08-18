@@ -98,8 +98,17 @@ export class SettingsLoader {
      */
     loadConstraintSettings(): ConstraintSettings {
         const minSetpointChangeMinutes = this.getNumber('min_setpoint_change_minutes', 30, { min: 1, max: 180 });
-        const deadband = this.getNumber('deadband_c', 0.5, { min: 0.1, max: 2 });
+        let deadband = this.getNumber('deadband_c', 0.5, { min: 0.1, max: 2 });
         const tempStepMax = this.getNumber('temp_step_max', 0.5, { min: 0.5, max: 1.0 });
+
+        // Cross-field guard: the setpoint ramp limiter caps every change at tempStepMax before
+        // the deadband is tested, so a deadband larger than the step can never be satisfied and
+        // the setpoint freezes permanently. deadband_c allows up to 2.0 while temp_step_max caps
+        // at 1.0, so this is a UI-reachable configuration.
+        if (deadband > tempStepMax) {
+            this.logger.log(`Deadband ${deadband}°C exceeds max step ${tempStepMax}°C — clamping to ${tempStepMax}°C to avoid setpoint freeze`);
+            deadband = tempStepMax;
+        }
 
         this.logger.log(`Constraint settings loaded - Min change: ${minSetpointChangeMinutes}m, Deadband: ${deadband}°C, Step: ${tempStepMax}°C`);
 

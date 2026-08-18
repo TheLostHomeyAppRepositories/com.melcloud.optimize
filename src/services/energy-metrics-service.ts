@@ -42,6 +42,12 @@ export const ENERGY_METRICS_CONFIG = {
    * is summer regardless of consumed electricity. Prevents being stuck in "transition" all summer.
    */
   MIN_HEATING_PRODUCED_FOR_SEASON: 0.5,
+  /**
+   * Heating COP below which the pump is treated as not heating at all, regardless of how many
+   * kWh it drew. Set above 1.0 deliberately: a real heating cycle on an air-to-water unit runs
+   * 2.5-4, so anything under 1.5 is parasitic draw and short-cycling rather than space heating.
+   */
+  MIN_HEATING_COP_FOR_SEASON: 1.5,
   /** Ratio of heating to hot water for winter classification */
   HEATING_DOMINANT_RATIO: 2.0,
   /** Default efficiency fallback divisor for basic normalization */
@@ -290,6 +296,19 @@ export class EnergyMetricsService {
     if (
       heatingProduced !== undefined &&
       heatingProduced < ENERGY_METRICS_CONFIG.MIN_HEATING_PRODUCED_FOR_SEASON
+    ) {
+      return 'summer';
+    }
+
+    // Efficiency test, which is what the absolute-kWh guard above was really reaching for.
+    // A heat pump that delivers less heat than the electricity it consumes is not heating — it is
+    // standing by and short-cycling. Measured on a live device in midsummer: 1.221 kWh produced
+    // from 1.766 kWh consumed (COP 0.69) at 17 °C outdoor, which cleared the 0.5 kWh threshold
+    // and was therefore classified 'transition' all summer.
+    if (
+      heatingProduced !== undefined &&
+      heatingConsumed > 0 &&
+      heatingProduced / heatingConsumed < ENERGY_METRICS_CONFIG.MIN_HEATING_COP_FOR_SEASON
     ) {
       return 'summer';
     }

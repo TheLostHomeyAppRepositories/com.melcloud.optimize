@@ -86,6 +86,26 @@ export class ThermalAnalyzer {
   }
 
   /**
+   * Reset the learned thermal characteristics back to defaults with zero confidence.
+   *
+   * Needed when the model was trained on data that cannot represent room dynamics — most
+   * notably a device in Flow/Curve mode, where the zone setpoint is not a room target and the
+   * heating-rate regression collects samples of the room drifting for unrelated reasons. Such a
+   * model reports high confidence while holding a physically impossible negative heating rate,
+   * and there is no path for it to recover on its own once the bad data stops arriving.
+   */
+  public resetCharacteristics(): ThermalCharacteristics {
+    this.initializeDefaultCharacteristics();
+    try {
+      this.homey.settings.set(THERMAL_CHARACTERISTICS_SETTINGS_KEY, JSON.stringify(this.thermalCharacteristics));
+    } catch (error) {
+      this.homey.error('Error persisting reset thermal characteristics:', error);
+    }
+    this.homey.log('Thermal characteristics reset to defaults with zero confidence');
+    return { ...this.thermalCharacteristics };
+  }
+
+  /**
    * Update the thermal model based on collected data
    */
   public updateModel(dataPoints: ThermalDataPoint[]): ThermalCharacteristics {

@@ -265,5 +265,32 @@
   },
   "14.0.53": {
     "en": "Bug hunting"
+  },
+  "14.0.55": {
+    "en": "Fixes learning on weather-compensation (Curve) heat pumps, stops summer solar gain from suppressing price optimisation, and guards a setpoint-freeze configuration."
+  },
+  "14.0.57": {
+    "en": "Adds a recovery action that resets learned price weights, strategy parameters and the thermal model to defaults."
+  },
+  "14.0.58": {
+    "en": "Hot water: the tank can now reach its target in one or two steps instead of stepping 1C per hour, and holds steady when there is no strong price signal."
+  },
+  "14.0.59": {
+    "en": "Hot water now commits to reheating at the cheap hour it picked, and stays put when the day is too flat for shifting to pay."
+  },
+  "14.0.61": {
+    "en": "Hot water usage is now learned from actual tank draw instead of the heat pump reheating, so peak hours reflect your household rather than the app schedule."
+  },
+  "14.0.62": {
+    "en": "Stops the optimizer rewarding itself for doing nothing, correctly detects summer from heating efficiency, and improves how hot water usage is detected."
+  },
+  "14.0.63": {
+    "en": "Savings figures are now correct: the daily and weekly numbers finally measure the same thing, and the average is shown per day rather than as a percentage."
+  },
+  "14.0.64": {
+    "en": "Summer savings are no longer measured against heating that never happens, price classification uses a comparable time resolution, and a hold is no longer described as an adjustment."
+  },
+  "14.0.65": {
+    "en": "Important fixes to how the optimizer learns and reports.\n\nYour displayed savings will drop sharply after this update. That is the fix working, not a regression: the old summer baseline compared against heating the pump was never doing, which inflated the figure several times over. The daily and weekly numbers also measured different things, and the average was labelled as a percentage when it was an amount per day.\n\nAlso fixed: price sensitivity drifted to its maximum over time and could not come back down; hot water usage was learned from the pump reheating rather than from water actually being drawn, so peak hours reflected the app schedule instead of your household; the hot water tank could not reach its target within a cheap price window; heat pumps running weather compensation fed invalid data into the temperature model; and some settings combinations could silently freeze the room setpoint."
   }
 }

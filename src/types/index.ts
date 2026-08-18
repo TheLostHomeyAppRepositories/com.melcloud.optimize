@@ -65,6 +65,9 @@ export interface MelCloudDevice {
   RoomTemperatureZone1?: number;
   SetTemperature?: number;
   SetTemperatureZone1?: number;
+  /** ATW zone control mode: 0 = Room, 1 = Flow, 2 = Curve (weather compensation). */
+  OperationModeZone1?: number;
+  OperationModeZone2?: number;
   OutdoorTemperature: number;
   IdleZone1: boolean;
   DailyHeatingEnergyProduced?: number;
@@ -80,6 +83,12 @@ export interface TibberPriceInfo {
     price: number;
     time: string;
   };
+  /**
+   * Raw sub-hourly price for the current instant, when the provider supplies one.
+   * `current` is deliberately the hourly-mean bucket so it can be ranked against `prices`;
+   * this is the unaggregated value, for block-edge decisions that need the finer resolution.
+   */
+  currentQuarter?: PricePoint;
   prices: PricePoint[];
   quarterHourly?: PricePoint[];
   intervalMinutes?: number;
@@ -710,6 +719,7 @@ export interface ApiHandlers {
   updateOptimizerSettings(context: ApiHandlerContext): Promise<UpdateOptimizerSettingsResponse>;
   postHotWaterResetPatterns(context: ApiHandlerContext): Promise<HotWaterResponse>;
   postHotWaterClearData(context: ApiHandlerContext): Promise<HotWaterResponse>;
+  postResetLearnedState(context: ApiHandlerContext): Promise<{ success: boolean; message: string; result?: unknown }>;
   getHotWaterPatterns(context: ApiHandlerContext): Promise<HotWaterResponse>;
   getDeviceList(context: ApiHandlerContext): Promise<GetDeviceListResponse>;
   getRunHourlyOptimizer(context: ApiHandlerContext): Promise<GetRunHourlyOptimizerResponse>;

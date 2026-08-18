@@ -22,7 +22,8 @@
     "simulate": "npm run build:ts && node .homeybuild/scripts/simulate.js --data data/timeseries.csv --config data/config.yaml --output results/",
     "gen:scenarios": "tsc -p tsconfig.fixtures.json && node .homeybuild/test/fixtures/generate-scenarios.js",
     "validate": "homey app validate",
-    "homey:install": "homey app install"
+    "homey:install": "homey app install",
+    "check:health": "node scripts/check-optimizer-health.mjs"
   },
   "devDependencies": {
     "@types/jest": "^29.5.14",

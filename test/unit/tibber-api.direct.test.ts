@@ -109,8 +109,13 @@ describe('TibberApi Direct Tests', () => {
       // Verify the result
       expect(prices).toBeDefined();
       expect(prices.current).toBeDefined();
-      expect(prices.current.price).toBe(0.15);
-      expect(prices.current.time).toBe('2023-01-01T00:00:00Z');
+      // Hourly-mean bucket, so it can be ranked against `prices`; the raw quarter-hour value is
+      // published separately as `currentQuarter`.
+      expect(prices.current.price).toBeCloseTo(0.13, 5);
+      expect(prices.currentQuarter?.price).toBe(0.15);
+      // Same instant; the hourly bucket carries a normalised ISO timestamp.
+      expect(Date.parse(prices.current.time)).toBe(Date.parse('2023-01-01T00:00:00Z'));
+      expect(prices.currentQuarter?.time).toBe('2023-01-01T00:00:00Z');
       expect(prices.prices).toBeDefined();
       expect(prices.prices.length).toBe(2);
       expect(prices.quarterHourly?.length).toBe(8);

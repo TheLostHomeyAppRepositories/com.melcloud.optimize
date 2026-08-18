@@ -228,6 +228,16 @@ async function httpRequest(
 
 // Optimizer Service
 // Create instances of services
+/**
+ * Schema version for `display_savings_history` entries.
+ *
+ * v2 stores the optimized **cost** in `optimizedMinor`. v1 (unversioned) stored the **saving**
+ * there, so `baselineMinor - optimizedMinor` produced `cost - saving` — the quantity the 7-day
+ * total and the monthly projection were built from. Entries without this field are read using
+ * their stored `valueMajor`, which was always the saving and is correct as written.
+ */
+const SAVINGS_ENTRY_SCHEMA_VERSION = 2;
+
 const serviceState = getServiceState();
 let melCloud = serviceState.melCloud;
 let tibber = serviceState.tibber;
@@ -492,6 +502,80 @@ const apiHandlers: ApiHandlers = {
       return {
         success: false,
         message: `Error resetting hot water usage patterns: ${message} `
+      };
+    }
+  },
+
+  postResetLearnedState: async ({ homey, body }: ApiHandlerContext): Promise<{
+    success: boolean;
+    message: string;
+    result?: unknown;
+  }> => {
+    homey.app.log('API method postResetLearnedState called');
+
+    try {
+      const clearThermalData = (body as { clearThermalData?: boolean } | undefined)?.clearThermalData !== false;
+
+      // Reset the persisted state first. Homey settings are the source of truth and survive
+      // whether or not the optimizer happens to be initialised, so recovery must not depend on
+      // a live service. The learners' load paths spread stored values over their defaults, so
+      // deleting a key restores that key's default on next construction.
+      const before: Record<string, unknown> = {};
+      const RESET_KEYS = [
+        'priceWeightSummer', 'priceWeightWinter', 'priceWeightTransition',
+        'preheatAggressiveness', 'coastingReduction', 'boostIncrease'
+      ];
+
+      const rawAdaptive = homey.settings.get('adaptive_business_parameters');
+      if (rawAdaptive) {
+        const parsed = typeof rawAdaptive === 'string' ? JSON.parse(rawAdaptive) : { ...rawAdaptive };
+        for (const key of RESET_KEYS) {
+          before[key] = parsed[key];
+          delete parsed[key];
+        }
+        homey.settings.set('adaptive_business_parameters', JSON.stringify(parsed));
+      }
+
+      const rawThermal = homey.settings.get('thermal_model_characteristics');
+      before.thermalCharacteristics = typeof rawThermal === 'string' ? JSON.parse(rawThermal) : rawThermal ?? null;
+      homey.settings.set('thermal_model_characteristics', null);
+
+      if (clearThermalData) {
+        homey.settings.set('thermal_model_data', null);
+        homey.settings.set('thermal_model_aggregated_data', null);
+      }
+
+      // The hot water usage pattern is learned state too. It is cleared rather than left to
+      // decay because the pattern and the signal it was derived from are not comparable: a
+      // profile learned from reheat timing cannot be blended with one learned from tank draw.
+      if ((body as { clearHotWaterPatterns?: boolean } | undefined)?.clearHotWaterPatterns) {
+        before.hotWaterPatterns = homey.settings.get('hot_water_usage_patterns') ?? null;
+        homey.settings.set('hot_water_usage_patterns', null);
+      }
+
+      // If the optimizer is live, also reset its in-memory copies, otherwise they would be
+      // written back over the settings on the next save.
+      let inMemoryReset = false;
+      try {
+        const activeOptimizer = requireOptimizer();
+        activeOptimizer.resetLearnedState({ clearThermalData });
+        inMemoryReset = true;
+      } catch {
+        homey.app.log('Optimizer not initialised; persisted state reset only (applies on next start)');
+      }
+
+      return {
+        success: true,
+        message: `Learned state reset to defaults${clearThermalData ? ', thermal data cleared' : ''}. ` +
+          (inMemoryReset ? 'Applied immediately.' : 'Applies on next optimizer start.'),
+        result: { before, clearThermalData, inMemoryReset }
+      };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      homey.app.error('Error resetting learned state:', error);
+      return {
+        success: false,
+        message: `Error resetting learned state: ${message}`
       };
     }
   },
@@ -1159,14 +1243,27 @@ const apiHandlers: ApiHandlers = {
                     }
                   }
 
+                  // determineSeason now discriminates on heating efficiency, so 'summer' means the
+                  // pump is genuinely not space heating. The baseline must reflect that: a
+                  // constant-temperature thermostat in the same house and weather would not have
+                  // called for heat either, so charging it for heating makes the whole comparison
+                  // fiction. Measured live in August: ~3.5 of a 6.5 kWh/day baseline was space
+                  // heating that never happened — over half the displayed "saving".
+                  const spaceHeatingActive = result.energyMetrics?.seasonalMode !== 'summer';
+
                   const baselineOptions: any = {
                     enableBaseline: true,
                     baselineConfig: {
                       heatingSetpoint: 21,
                       hotWaterSetpoint: 60,
-                      operatingProfile: 'always_on'
+                      operatingProfile: 'always_on',
+                      spaceHeatingActive
                     }
                   };
+
+                  if (!spaceHeatingActive) {
+                    homey.app.log('Baseline excludes space heating: season is summer, so the comparison is hot-water only');
+                  }
 
                   if (actualConsumptionKWh !== undefined) baselineOptions.actualConsumptionKWh = actualConsumptionKWh;
                   if (actualCost !== undefined) baselineOptions.actualCost = actualCost;
@@ -1201,7 +1298,6 @@ const apiHandlers: ApiHandlers = {
                   entry.currency = currencyCode;
                   entry.decimals = decimals;
                   entry.valueMajor = finalDailySavings;
-                  entry.optimizedMinor = toMinor(Math.max(0, finalDailySavings));
                   entryUpdated = true;
                 }
 
@@ -1210,7 +1306,12 @@ const apiHandlers: ApiHandlers = {
                   entry.currency = currencyCode;
                   entry.decimals = decimals;
                   entry.baselineMinor = toMinor(Math.max(0, baselineCostMajor));
-                  // Keep baseline cost; optimizedMinor already set to savings above
+                  // optimizedMinor holds the optimized COST, so that the reader's
+                  // baseline - optimized genuinely yields the saving. It previously held the
+                  // saving itself, which made that subtraction compute cost - saving: a
+                  // quantity with no meaning, summed into the 7-day total and the projection.
+                  entry.optimizedMinor = toMinor(Math.max(0, optimizedCostMajor));
+                  entry.schemaVersion = SAVINGS_ENTRY_SCHEMA_VERSION;
                   entryUpdated = true;
                 } else if (!hasStoredBaseline && baselineSource !== 'stored') {
                   homey.app.log('Skipping display_savings_history update: no baseline data available for today');
@@ -2540,7 +2641,15 @@ const apiHandlers: ApiHandlers = {
       let adaptiveParameters = {
         learningCycles: null as number | null,
         confidence: null as number | null,
-        lastUpdated: null as string | null
+        lastUpdated: null as string | null,
+        // Diagnostics: the seasonal price weights are clamped to [0.2, 0.9] and are driven down
+        // by comfort violations. Surfacing them makes drift toward the 0.2 floor observable
+        // instead of something that has to be inferred.
+        priceWeightSummer: null as number | null,
+        priceWeightWinter: null as number | null,
+        priceWeightTransition: null as number | null,
+        preheatAggressiveness: null as number | null,
+        coastingReduction: null as number | null
       };
 
       if (adaptiveParametersRaw) {
@@ -2552,7 +2661,12 @@ const apiHandlers: ApiHandlers = {
           adaptiveParameters = {
             learningCycles: parsed.learningCycles ?? null,
             confidence: parsed.confidence ?? null,
-            lastUpdated: parsed.lastUpdated ?? null
+            lastUpdated: parsed.lastUpdated ?? null,
+            priceWeightSummer: parsed.priceWeightSummer ?? null,
+            priceWeightWinter: parsed.priceWeightWinter ?? null,
+            priceWeightTransition: parsed.priceWeightTransition ?? null,
+            preheatAggressiveness: parsed.preheatAggressiveness ?? null,
+            coastingReduction: parsed.coastingReduction ?? null
           };
         } catch (parseErr) {
           homey.app.error('Failed to parse adaptive parameters:', parseErr);
@@ -2789,12 +2903,23 @@ const apiHandlers: ApiHandlers = {
             let optimizedMajor: number | null = null;
             let valueMajor: number | null = null;
 
-            if (Number.isFinite(baselineMinor) && Number.isFinite(optimizedMinor)) {
+            // Entries written before SAVINGS_ENTRY_SCHEMA_VERSION stored the *saving* in
+            // optimizedMinor, so subtracting it from the baseline would yield cost - saving.
+            // Their valueMajor was always the saving and is correct as stored, so use it
+            // directly rather than recomputing. Without this the fix would silently rewrite
+            // history to a different wrong number.
+            const isCostSchema = Number(entry.schemaVersion) >= SAVINGS_ENTRY_SCHEMA_VERSION;
+
+            if (isCostSchema && Number.isFinite(baselineMinor) && Number.isFinite(optimizedMinor)) {
               baselineMajor = Number(minorToMajor(Math.max(0, baselineMinor), entryDecimals).toFixed(entryDecimals));
               optimizedMajor = Number(minorToMajor(Math.max(0, optimizedMinor), entryDecimals).toFixed(entryDecimals));
               const savingsMinor = Math.max(0, baselineMinor - optimizedMinor);
               valueMajor = Number(minorToMajor(savingsMinor, entryDecimals).toFixed(entryDecimals));
             } else if (typeof entry.valueMajor === 'number') {
+              // Legacy entry, or a new one with no baseline available: valueMajor is the saving.
+              if (Number.isFinite(baselineMinor)) {
+                baselineMajor = Number(minorToMajor(Math.max(0, baselineMinor), entryDecimals).toFixed(entryDecimals));
+              }
               valueMajor = Number(entry.valueMajor);
             } else if (typeof entry.value === 'number') {
               valueMajor = Number(entry.value);
@@ -2824,9 +2949,11 @@ const apiHandlers: ApiHandlers = {
           const todayHistory = historyEntries.find(entry => entry.date === todayIso);
           if (todayHistory) {
             if (typeof todayHistory.valueMajor === 'number') {
-              // Prefer optimized/standard savings over baseline deltas when both are present
-              const optimizedValue = typeof todayHistory.optimizedMajor === 'number' ? todayHistory.optimizedMajor : todayHistory.valueMajor;
-              smartSavingsDisplay.today = optimizedValue;
+              // Same field the 7-day total sums. This previously preferred optimizedMajor, which
+              // under the old schema held the saving and so looked plausible - but it meant the
+              // "today" tile and the "last 7 days" tile were reporting different quantities, and
+              // today's own contribution to that week was a different number again.
+              smartSavingsDisplay.today = todayHistory.valueMajor;
             }
             if (todayHistory.seasonMode) {
               smartSavingsDisplay.seasonMode = todayHistory.seasonMode;

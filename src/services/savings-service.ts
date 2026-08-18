@@ -391,6 +391,15 @@ export class SavingsService {
       // Get intelligent baseline configuration (automatically determined)
       const baselineConfig = this.enhancedSavingsCalculator.getDefaultBaselineConfig();
 
+      // Suppress the space-heating term when the pump is not space heating. The baseline means
+      // "the same house and weather under a fixed setpoint", and such a thermostat would not have
+      // called for heat either — charging it for heating that never happens is what made the
+      // summer savings figure roughly five times the real one.
+      const seasonalMode = this.metricsAccessor.getOptimizationMetrics()?.seasonalMode;
+      if (seasonalMode === 'summer') {
+        baselineConfig.spaceHeatingActive = false;
+      }
+
       return this.enhancedSavingsCalculator.calculateEnhancedDailySavingsWithBaseline(
         currentHourSavings,
         historicalOptimizations,
