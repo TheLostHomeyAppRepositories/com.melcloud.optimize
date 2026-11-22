@@ -31,8 +31,19 @@ function morningPeak(reference: number): PricePoint[] {
   ]);
 }
 
-function strategyFor(roomC: number, targetC: number, prices: PricePoint[], reference: number, band = BAND) {
+function strategyFor(
+  roomC: number,
+  targetC: number,
+  prices: PricePoint[],
+  reference: number,
+  band = BAND,
+  roomTargetMode?: boolean,
+  curveGateOffsetC?: number
+) {
   const controller = new ThermalController(makeLogger(), undefined, undefined, new CopNormalizer());
+  if (curveGateOffsetC !== undefined) {
+    controller.setCurveGateOffset(curveGateOffsetC);
+  }
   return controller.calculateThermalMassStrategy(
     roomC,
     targetC,
@@ -44,7 +55,9 @@ function strategyFor(roomC: number, targetC: number, prices: PricePoint[], refer
     band,
     reference,
     undefined,
-    'EXPENSIVE'
+    'EXPENSIVE',
+    undefined,
+    roomTargetMode
   );
 }
 
@@ -84,5 +97,35 @@ describe('ThermalController coasting', () => {
     const strategy = strategyFor(21.5, 22, prices, reference);
 
     expect(strategy.action).not.toBe('coast');
+  });
+
+  describe('Curve mode (setpoint is the unit room thermostat)', () => {
+    // Live 2026-11-09: room 21.5, the coast target was 21.0 (0.5 below the room) and the pump ran
+    // through the whole 8-9.4 SEK/kWh peak. The unit stops only about 1 °C above the setpoint.
+    const WIDE_BAND = { minTemp: 19, maxTemp: 24 };
+
+    it('puts the coasting target the default 1 °C stop margin below the room', () => {
+      // Room 1 °C under the target, so the room offset (not the coasting reduction) decides.
+      const strategy = strategyFor(21, 22, morningPeak(reference), reference, WIDE_BAND, false);
+
+      expect(strategy.action).toBe('coast');
+      expect(strategy.targetTemp).toBeLessThanOrEqual(20);
+      expect(strategy.targetTemp).toBeGreaterThanOrEqual(WIDE_BAND.minTemp);
+    });
+
+    it('follows the user stop margin but never goes below the comfort minimum', () => {
+      const strategy = strategyFor(21, 22, morningPeak(reference), reference, WIDE_BAND, false, 2.0);
+
+      expect(strategy.action).toBe('coast');
+      expect(strategy.targetTemp).toBe(WIDE_BAND.minTemp);
+    });
+
+    it('Room mode keeps the 0.5 °C quantisation offset', () => {
+      const curveTarget = strategyFor(21, 22, morningPeak(reference), reference, WIDE_BAND, false, 1.0).targetTemp;
+      const roomTarget = strategyFor(21, 22, morningPeak(reference), reference, WIDE_BAND, true, 1.0).targetTemp;
+
+      expect(roomTarget).toBeGreaterThan(curveTarget);
+      expect(roomTarget).toBeLessThan(21);
+    });
   });
 });

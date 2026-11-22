@@ -470,6 +470,11 @@
             <input class="homey-form-input" id="temp_step_max" type="number" min="0.5" max="1.0" step="0.5" value="0.5" />
             <p class="homey-form-helper">Max change per optimization step, and the rounding step for room targets.</p>
           </div>
+          <div class="homey-form-col">
+            <label class="homey-form-label" for="curve_gate_off_offset_c">Curve Stop Margin (°C)</label>
+            <input class="homey-form-input" id="curve_gate_off_offset_c" type="number" min="0.5" max="2.0" step="0.5" value="1.0" />
+            <p class="homey-form-helper">Curve mode only: how far the room must be above the target before the heat pump stops. Coasting in expensive hours sets the target this far below the room.</p>
+          </div>
         </div>
       </div>
       <div class="homey-form-group">
@@ -910,6 +915,7 @@
       const autoSettings = (function () {
         const FIELDS = [
           { key: 'deadband_c', id: 'deadband_c' },
+          { key: 'curve_gate_off_offset_c', id: 'curve_gate_off_offset_c' },
           { key: 'min_setpoint_change_minutes', id: 'min_setpoint_change_minutes' },
           { key: 'temp_step_max', id: 'temp_step_max' },
           { key: 'preheat_cheap_percentile', id: 'preheat_cheap_percentile' },
@@ -1827,6 +1833,7 @@
 
         // Engine elements
         const deadbandElement = document.getElementById("deadband_c");
+        const curveGateOffsetElement = document.getElementById("curve_gate_off_offset_c");
         const minChangeMinutesElement = document.getElementById("min_setpoint_change_minutes");
         const occupiedElement = document.getElementById("occupied");
         const comfortLowerOccElement = document.getElementById("comfort_lower_occupied");
@@ -2099,6 +2106,7 @@
 
         // Load engine settings
         Homey.get("deadband_c", function (err, value) { if (hasValidValue(err, value)) deadbandElement.value = value; });
+        Homey.get("curve_gate_off_offset_c", function (err, value) { if (hasValidValue(err, value) && curveGateOffsetElement) curveGateOffsetElement.value = value; });
         Homey.get("min_setpoint_change_minutes", function (err, value) { if (hasValidValue(err, value)) minChangeMinutesElement.value = value; });
         Homey.get("occupied", function (err, value) { if (!err && value !== undefined && value !== null && value !== "") occupiedElement.checked = !!value; });
 
@@ -2779,6 +2787,13 @@
             if (!isNaN(deadband) && deadband >= 0.1 && deadband <= 2.0) {
               Homey.set("deadband_c", deadband, function (err) { if (err) console.error('Error saving deadband_c:', err); });
             } else if (deadbandElement.value) { Homey.alert('Invalid Deadband. 0.1–2.0°C'); return; }
+          }
+
+          if (curveGateOffsetElement && !autoSettings.isAuto('curve_gate_off_offset_c')) {
+            const gateOffset = parseFloat(curveGateOffsetElement.value);
+            if (!isNaN(gateOffset) && gateOffset >= 0.5 && gateOffset <= 2.0) {
+              Homey.set("curve_gate_off_offset_c", gateOffset, function (err) { if (err) console.error('Error saving curve_gate_off_offset_c:', err); });
+            } else if (curveGateOffsetElement.value) { Homey.alert('Invalid Curve Stop Margin. 0.5–2.0°C'); return; }
           }
 
           if (minChangeMinutesElement && !autoSettings.isAuto('min_setpoint_change_minutes')) {

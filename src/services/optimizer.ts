@@ -475,6 +475,7 @@ export class Optimizer {
       settings.constraints.minSetpointChangeMinutes,
       settings.constraints.deadband
     );
+    this.thermalController.setCurveGateOffset(settings.constraints.curveGateOffset);
 
     // Load and apply Zone 1 constraints (using current values as basis)
     const zone1Min = this.settingsLoader.getNumber('min_temp', COMFORT_CONSTANTS.DEFAULT_MIN_TEMP, { min: 10, max: 30 });
@@ -770,6 +771,15 @@ export class Optimizer {
     this.constraintManager.setZone1Constraints(validMin, validMax, validStep);
 
     this.logger.log(`Temperature constraints set - Min: ${validMin}°C, Max: ${validMax}°C, Step: ${validStep}°C`);
+  }
+
+  /**
+   * Curve/Flow mode: how far the room must be above the setpoint before the unit stops heating.
+   * Used for the coasting setpoint and for deciding when a setpoint write cannot change anything.
+   */
+  setCurveGateOffset(offsetC: number): void {
+    this.thermalController.setCurveGateOffset(offsetC);
+    this.logger.log(`Curve stop margin set to ${this.thermalController.getCurveGateOffset()}°C`);
   }
 
   /**
@@ -1838,7 +1848,8 @@ export class Optimizer {
       roomC: currentTemp as number,
       fromC: safeCurrentTarget,
       toC,
-      marginC: inertMarginC
+      marginC: inertMarginC,
+      gateOffC: this.thermalController.getCurveGateOffset()
     });
     const thermostatHold = !roomAboveBand && zone1FinalConstraints.changed && inertTo(targetTemp) && inertTo(desiredTarget);
     if (thermostatHold) {

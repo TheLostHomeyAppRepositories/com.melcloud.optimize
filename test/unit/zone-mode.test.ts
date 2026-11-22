@@ -112,6 +112,36 @@ describe('isThermostatChangeInert', () => {
     expect(curve(22.5, 23, 24)).toBe(true);
   });
 
+  // Live 2026-11-09 15:00-18:00 at 8-9.4 SEK/kWh: room 21.5, target 21, the pump ran the whole
+  // peak (flow 35 °C). Over 14 days the unit never stopped at +0.5 °C (24/24 h); it stopped at
+  // about +1 °C. So with the room 0.5 above the current target, going lower is not a no-op.
+  describe('with the unit stop margin (gateOffC)', () => {
+    const gated = (roomC: number, fromC: number, toC: number, gateOffC = 1.0) =>
+      isThermostatChangeInert({ operationMode: ZoneOperationMode.Curve, roomC, fromC, toC, marginC: 0.3, gateOffC });
+
+    test('room only 0.5 above the current target: a lower target is written', () => {
+      expect(gated(21.5, 21, 20.5)).toBe(false);
+      // The old symmetric rule held this write, which kept the pump running.
+      expect(curve(21.5, 21, 20.5)).toBe(true);
+    });
+
+    test('room past both targets by the stop margin: the unit is off either way', () => {
+      expect(gated(22.5, 21, 20.5)).toBe(true);
+      expect(gated(23.5, 21, 22)).toBe(true);
+      // Exactly at the stop margin is not yet clearly off.
+      expect(gated(23, 21, 22)).toBe(false);
+    });
+
+    test('the lower side is unchanged: room clearly below both still heats either way', () => {
+      expect(gated(21.5, 23, 24)).toBe(true);
+    });
+
+    test('the margin never shrinks below marginC', () => {
+      expect(gated(22.2, 21, 21.5, 0.5)).toBe(true);
+      expect(gated(21.75, 21, 21.5, 0)).toBe(false);
+    });
+  });
+
   test('not in Flow mode: only Curve mode was measured to gate on the room setpoint', () => {
     expect(isThermostatChangeInert({ operationMode: ZoneOperationMode.Flow, roomC: 21.5, fromC: 23, toC: 24, marginC: 0.3 })).toBe(false);
   });

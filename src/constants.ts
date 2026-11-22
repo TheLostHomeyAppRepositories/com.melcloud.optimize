@@ -44,6 +44,13 @@ export const COMFORT_CONSTANTS = {
     /** Forced hot water started by the app is switched back to auto after this long at most, hours. */
     LOW_TANK_FORCED_MAX_HOURS: 3,
     DEFAULT_DEADBAND: 0.5,
+    /**
+     * Curve mode with a room sensor: how far the room must be above the zone setpoint before the
+     * Ecodan's room thermostat switches heating off. Measured 2026-10-26..11-09 (hourly insights):
+     * at +0.5 °C the pump never stopped (24/24 h); stops came at about +0.8 to +1.2 °C, and once
+     * off it stayed off until the room fell back to about the setpoint.
+     */
+    DEFAULT_CURVE_GATE_OFF_OFFSET_C: 1.0,
     DEFAULT_MIN_SETPOINT_CHANGE_MINUTES: 30,
     /** Standard away band: the occupied band moved down by this much (settings page "standard"). */
     DEFAULT_AWAY_OFFSET_C: 2,

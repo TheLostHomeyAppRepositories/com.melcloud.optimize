@@ -2071,6 +2071,7 @@ const apiHandlers: ApiHandlers = {
         comfort_away_offset_c: COMFORT_CONSTANTS.DEFAULT_AWAY_OFFSET_C,
         comfort_night_offset_c: COMFORT_CONSTANTS.DEFAULT_NIGHT_OFFSET_C,
         deadband_c: COMFORT_CONSTANTS.DEFAULT_DEADBAND,
+        curve_gate_off_offset_c: COMFORT_CONSTANTS.DEFAULT_CURVE_GATE_OFF_OFFSET_C,
         min_setpoint_change_minutes: COMFORT_CONSTANTS.DEFAULT_MIN_SETPOINT_CHANGE_MINUTES,
         temp_step_max: COMFORT_CONSTANTS.DEFAULT_TEMP_STEP,
         preheat_cheap_percentile: PRICE_CONSTANTS.DEFAULT_CHEAP_PERCENTILE,

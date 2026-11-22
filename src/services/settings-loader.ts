@@ -70,6 +70,8 @@ export interface ConstraintSettings {
     minSetpointChangeMinutes: number;
     deadband: number;
     tempStepMax: number;
+    /** Curve mode: room above setpoint (°C) at which the unit's room thermostat stops heating. */
+    curveGateOffset: number;
 }
 
 /**
@@ -161,9 +163,11 @@ export class SettingsLoader {
             deadband = tempStepMax;
         }
 
-        this.logger.log(`Constraint settings loaded - Min change: ${minSetpointChangeMinutes}m, Deadband: ${deadband}°C, Step: ${tempStepMax}°C`);
+        const curveGateOffset = this.getNumber('curve_gate_off_offset_c', COMFORT_CONSTANTS.DEFAULT_CURVE_GATE_OFF_OFFSET_C, { min: 0.5, max: 2 });
 
-        return { minSetpointChangeMinutes, deadband, tempStepMax };
+        this.logger.log(`Constraint settings loaded - Min change: ${minSetpointChangeMinutes}m, Deadband: ${deadband}°C, Step: ${tempStepMax}°C, Curve stop margin: ${curveGateOffset}°C`);
+
+        return { minSetpointChangeMinutes, deadband, tempStepMax, curveGateOffset };
     }
 
     /**

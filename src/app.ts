@@ -389,6 +389,7 @@ export default class HeatOptimizerApp extends App {
   private shouldRefreshOptimizerSettings(key: string): boolean {
     const optimizerKeys = [
       'deadband_c',
+      'curve_gate_off_offset_c',
       'min_setpoint_change_minutes',
       'temp_step_max',
       'comfort_lower_occupied',

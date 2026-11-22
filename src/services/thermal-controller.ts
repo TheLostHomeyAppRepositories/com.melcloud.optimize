@@ -13,6 +13,7 @@ import { PriceAnalyzer } from './price-analyzer';
 import { applySetpointConstraints } from '../util/setpoint-constraints';
 import { HousePriceContextResolver, HousePriceContextParams } from './house-price-context';
 import { predictCurveWarming } from './thermal-model/thermal-analyzer';
+import { COMFORT_CONSTANTS } from '../constants';
 
 /**
  * Thermal Controller Constants
@@ -53,8 +54,9 @@ const BOOST_SAVINGS_FACTOR = 0.15;
 // Scalable constants - these are caps/defaults, actual values derived from thermal model
 const MAX_COASTING_HOURS_CAP = 6;
 /**
- * A coasting setpoint sits at least this far below the room so the room-sensor gate actually
- * switches heating off. MELCloud reports room temperature, and accepts setpoints, in 0.5 °C.
+ * Room mode: a coasting setpoint sits at least this far below the room. MELCloud reports room
+ * temperature, and accepts setpoints, in 0.5 °C. In Curve/Flow mode the user's curve stop margin
+ * (`curve_gate_off_offset_c`) is used instead, see setCurveGateOffset.
  */
 const COAST_BELOW_ROOM_C = 0.5;
 /** The gate decides for one hourly cycle; the next run re-evaluates. */
@@ -105,6 +107,11 @@ export class ThermalController {
     private thermalModelService?: ThermalModelService;
     private adaptiveLearner?: AdaptiveParametersLearner;
     private copNormalizer?: CopNormalizer;
+    /**
+     * Curve/Flow mode: the room must be this far above the setpoint before the unit's room
+     * thermostat stops heating, so a coasting setpoint goes at least this far below the room.
+     */
+    private curveGateOffsetC: number = COMFORT_CONSTANTS.DEFAULT_CURVE_GATE_OFF_OFFSET_C;
 
     constructor(
         private readonly logger: HomeyLogger,
@@ -115,6 +122,17 @@ export class ThermalController {
         this.thermalModelService = thermalModelService;
         this.adaptiveLearner = adaptiveLearner;
         this.copNormalizer = copNormalizer;
+    }
+
+    /** User setting `curve_gate_off_offset_c`; invalid values keep the current margin. */
+    public setCurveGateOffset(offsetC: number): void {
+        if (Number.isFinite(offsetC) && offsetC > 0) {
+            this.curveGateOffsetC = offsetC;
+        }
+    }
+
+    public getCurveGateOffset(): number {
+        return this.curveGateOffsetC;
     }
 
     public setThermalModelService(service?: ThermalModelService): void {
@@ -413,9 +431,12 @@ export class ThermalController {
                 // the pump ran flat out through the morning peak.
                 // Target: below the room. With a room sensor the setpoint is an on/off gate (also
                 // in Curve mode), so heating only stops if the setpoint is under the room
-                // temperature. Never below the comfort minimum.
+                // temperature. In Curve/Flow mode the unit only stops once the room is about the
+                // curve stop margin above the setpoint (0.5 °C below the room never stopped it,
+                // measured 2026-11-09). Never below the comfort minimum.
+                const coastBelowRoomC = roomTargetMode === false ? this.curveGateOffsetC : COAST_BELOW_ROOM_C;
                 const coastingTarget = Math.max(
-                    Math.min(targetTemp - adaptiveThresholds.coastingReduction, currentTemp - COAST_BELOW_ROOM_C),
+                    Math.min(targetTemp - adaptiveThresholds.coastingReduction, currentTemp - coastBelowRoomC),
                     comfortBand.minTemp
                 );
                 // Derive max coasting hours from thermal capacity: higher capacity = longer safe coasting

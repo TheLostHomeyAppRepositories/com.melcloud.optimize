@@ -114,6 +114,11 @@ export function getZoneOperationalState(
  * (live 2026-10-24: target 23 <-> 24 all night with the room at 21.5). `marginC` keeps writes that
  * may matter before the next run. Room mode also sets the flow temperature from the setpoint, and
  * Flow mode was never measured, so neither is ever treated as inert.
+ *
+ * The gate is not symmetric. The unit stops heating only once the room is `gateOffC` above the
+ * setpoint (2026-10-26..11-09: at +0.5 °C it never stopped, 24/24 h; stops came at about +0.8 to
+ * +1.2 °C). So "clearly above both" needs the room past the larger target by that much: room 21.5
+ * with targets 21 -> 20.5 is not inert, because 21 keeps the curve running and 20.5 stops it.
  */
 export function isThermostatChangeInert(params: {
   operationMode: number | undefined | null;
@@ -121,10 +126,13 @@ export function isThermostatChangeInert(params: {
   fromC: number;
   toC: number;
   marginC: number;
+  /** Room above setpoint at which the unit stops heating; 0 (default) treats the gate as symmetric. */
+  gateOffC?: number;
 }): boolean {
   const { operationMode, roomC, fromC, toC, marginC } = params;
+  const gateOffC = Number.isFinite(params.gateOffC) ? (params.gateOffC as number) : 0;
   if (operationMode !== ZoneOperationMode.Curve || ![roomC, fromC, toC, marginC].every(Number.isFinite)) {
     return false;
   }
-  return roomC < Math.min(fromC, toC) - marginC || roomC > Math.max(fromC, toC) + marginC;
+  return roomC < Math.min(fromC, toC) - marginC || roomC > Math.max(fromC, toC) + Math.max(marginC, gateOffC);
 }

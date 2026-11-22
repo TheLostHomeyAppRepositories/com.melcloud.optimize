@@ -553,6 +553,20 @@ coasting. **Never switch a user's mode silently.**
   space-heating demand). 30 Oct 18:00 a 48 → 50 °C raise with the tank at 40.5 °C did nothing and the
   tank fell to 37 °C before the next run's forced request started the reheat.
 
+**2026-11-09:**
+- The Curve-mode gate is asymmetric. Hourly insights 2026-10-26..11-09: hours where the pump was
+  running and the room was 0.5 °C above the setpoint kept running 24 of 24 times; stops came at about
+  +0.8 to +1.2 °C, and once off the unit stayed off at +0.5 until the room fell to about the setpoint.
+  Live: 15:00–18:00 at 8–9.4 SEK/kWh, room 21.5 / target 21, flow 35 °C, the pump ran the whole peak.
+  It had not stopped once since the cold started on 11-07.
+- Two causes: coasting set the target only `COAST_BELOW_ROOM_C` (0.5) below the room, and
+  `isThermostatChangeInert` treated room 21.5 vs targets 21 → 20.5 as "off either way" and held the
+  write that would have stopped it.
+- New setting `curve_gate_off_offset_c` (default 1.0, 0.5–2.0, Automatic on the settings page). In
+  Curve/Flow mode the coast target goes that far below the room (never below the comfort minimum);
+  the inert check needs the room that far above the larger target before calling it a no-op. Room
+  mode keeps 0.5. With the pump off the house cooled ~0.1 °C/h (11-07: 22.0 → 21.5 in 5 h at 5–6 °C).
+
 **Phase 5 — COP weighting.** `delivered_price / COP(forecast_ambient)`. A curve already exists at
 `data/cop_curve.csv` (keyed by `temp_out_c, delta_c`) with a bilinear interpolator in
 `simulate.ts`, but it is never loaded at runtime. Guard the division — EMHASS has a live COP

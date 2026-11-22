@@ -44,6 +44,8 @@ describe('Optimizer Initialization', () => {
                 lastCalibration: new Date()
             }),
             setThermalMassModel: jest.fn(),
+            setCurveGateOffset: jest.fn(),
+            getCurveGateOffset: jest.fn().mockReturnValue(1.0),
         };
         (ThermalController as jest.Mock).mockImplementation(() => mockThermalController);
 

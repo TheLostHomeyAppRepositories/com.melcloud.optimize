@@ -12,7 +12,7 @@
 ## Automatic fine-tuning (14.0.80)
 
 These settings live under **Fine-tuning (optional)** on the settings page and default to
-**Automatic**: `deadband_c`, `min_setpoint_change_minutes`, `temp_step_max`,
+**Automatic**: `deadband_c`, `curve_gate_off_offset_c`, `min_setpoint_change_minutes`, `temp_step_max`,
 `preheat_cheap_percentile`, `tank_temp_step`, `temp_step_zone2`, `log_level`.
 
 - Automatic means the key is **unset**; the app then uses the default from `src/constants.ts`
@@ -100,6 +100,7 @@ user enters their own values. The raw range keys are still what is stored and wh
 |-------------|---------|-------|-------------|
 | `min_setpoint_change_minutes` | 30 | 1-180 min | Minimum time between setpoint changes (anti-cycling) |
 | `deadband_c` | 0.5 | 0.1-2.0°C | Minimum temperature change threshold |
+| `curve_gate_off_offset_c` | 1.0 | 0.5-2.0°C | Curve mode: room above target at which the unit stops heating. Coasting targets go this far below the room, and writes are only held as no-ops when the room is this far above both targets |
 | `temp_step_max` | 0.5 | 0.5-1.0°C | Maximum temperature step per cycle |
 
 ---

@@ -557,6 +557,12 @@ export async function updateOptimizerSettings(homey: HomeyLike): Promise<void> {
     2,
     COMFORT_CONSTANTS.DEFAULT_DEADBAND
   );
+  const curveGateOffsetC = clampNumber(
+    toNumber(homey.settings.get('curve_gate_off_offset_c')),
+    0.5,
+    2,
+    COMFORT_CONSTANTS.DEFAULT_CURVE_GATE_OFF_OFFSET_C
+  );
   const minSetpointChangeMinutes = clampNumber(
     toNumber(homey.settings.get('min_setpoint_change_minutes')),
     1,
@@ -615,6 +621,7 @@ export async function updateOptimizerSettings(homey: HomeyLike): Promise<void> {
   homey.app.log('- Cheap Percentile:', preheatCheapPercentile, `(${(preheatCheapPercentile * 100).toFixed(1)}th percentile)`);
 
   optimizer.setConstraintSettings(minSetpointChangeMinutes, deadbandC);
+  optimizer.setCurveGateOffset(curveGateOffsetC);
   optimizer.setTemperatureConstraints(minTemp, maxTemp, tempStep);
   optimizer.setZone2TemperatureConstraints(enableZone2, minTempZone2, maxTempZone2, tempStepZone2);
   optimizer.setTankTemperatureConstraints(enableTankControl, minTankTemp, maxTankTemp, tankTempStep);
